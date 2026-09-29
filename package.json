@@ -59,7 +59,7 @@
     "@nestjs/platform-ws": "12.1.0",
     "@nestjs/resilience": "0.0.1",
     "@nestjs/testing": "12.1.0",
-    "@nestjs/throttler": "6.7.0",
+    "@nestjs/throttler": "6.7.1",
     "@nestjs/websockets": "12.1.0",
     "@types/node": "24.13.6",
     "@types/pg": "8.23.1",
