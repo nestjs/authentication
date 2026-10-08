@@ -20,6 +20,19 @@ import { SessionService } from './session.service.js';
  * }
  * ```
  *
+ * A store whose `getSession()` reads the user in the same query (a `JOIN`)
+ * can hand it over in `session.extra`, typed by `sessionExtra` on
+ * `AuthenticationTypes`, which saves the second read on every request:
+ *
+ * ```ts
+ * validate(session: SessionRecord) {
+ *   return session.extra?.user ?? null;
+ * }
+ * ```
+ *
+ * `extra` stays out of the result: `@CurrentSession()`, `request.session`
+ * and `AuthenticationContext.session` get the session without it.
+ *
  * A missing, stale or unknown cookie counts as "no credentials" rather than
  * a 401: browsers keep sending them, and optional routes should keep
  * working. So does the cookie on a cross-origin POST, PUT, PATCH or DELETE
@@ -31,7 +44,10 @@ import { SessionService } from './session.service.js';
 export abstract class SessionCookieProvider<TUser> extends AuthenticationProvider<TUser, SessionRecord> {
   @Inject(SessionService) protected readonly sessions!: SessionService;
 
-  /** Loads the user for a live session; `null` for deleted or banned users, which ends the session. */
+  /**
+   * Loads the user for a live session; `null` for deleted or banned users, which ends the session.
+   * `session.extra` is what the store read with the session, if anything.
+   */
   protected abstract validate(session: SessionRecord): TUser | null | undefined | Promise<TUser | null | undefined>;
 
   async authenticate(context: ExecutionContext): Promise<AuthenticationResult<TUser, SessionRecord> | null> {
@@ -46,7 +62,9 @@ export abstract class SessionCookieProvider<TUser> extends AuthenticationProvide
       return null;
     }
 
-    return { user, session, mfa: session.mfa };
+    // What the store joined (often the user's row, password hash and all) is for `validate()` only.
+    const { extra: _, ...stored } = session;
+    return { user, session: stored, mfa: session.mfa };
   }
 
   /** @internal An instance created with `new` was not property-injected. */

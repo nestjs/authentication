@@ -126,13 +126,14 @@ export class SessionService {
    * `absoluteTtl` from its creation, in place of its `mfa.pendingTtl`.
    * Resolves `null` when the session was gone by the time it was replaced:
    * revoked (a sign-out everywhere, a password reset) or rotated by another
-   * request, which leaves no new session behind.
+   * request, which leaves no new session behind. The session's `extra` is
+   * not carried over.
    */
   async rotate(
     session: SessionRecord,
     changes: Pick<Partial<SessionRecord>, 'mfa' | 'metadata'> = {},
   ): Promise<IssuedSession | null> {
-    const { id: _, ...rest } = session;
+    const { id: _, extra: _extra, ...rest } = session;
     const verifying = session.mfa === 'pending' && changes.mfa === 'verified';
     // The new session first, then the old one, which must still be there to delete: if a revocation
     // took it meanwhile (deleting the user's sessions, this new one included, or not yet), or another
@@ -224,7 +225,7 @@ export class SessionService {
     return this.idleTtl === 0 || now < record.lastActiveAt.getTime() + this.idleTtl;
   }
 
-  private async issue(fields: Omit<SessionRecord, 'id'>): Promise<IssuedSession> {
+  private async issue(fields: Omit<SessionRecord, 'id' | 'extra'>): Promise<IssuedSession> {
     const token = randomToken();
     const session: SessionRecord = { id: sha256(token), ...fields };
     await this.storage.sessions.createSession(session);

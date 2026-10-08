@@ -110,6 +110,7 @@ export type {
   RegisterHandlerOptions,
   RegisterProviderOptions,
   ResetPasswordOptions,
+  SessionExtra,
   SessionOptions,
   SessionRecord,
   SessionStore,
@@ -159,12 +160,15 @@ export { github, google, microsoft } from './oidc/oidc.presets.js';
 
 /**
  * Augment once per app to type `@CurrentUser('key')`,
- * `AuthenticationContext.user` and `AuthenticationContext.session`:
+ * `AuthenticationContext.user` and `AuthenticationContext.session`, and
+ * (`sessionExtra`) what a `SessionStore` reads with each session for
+ * `SessionCookieProvider.validate()` (`SessionRecord.extra`):
  *
  * @example
  * declare module '@nestjs/authentication' {
  *   interface AuthenticationTypes {
  *     user: User;
+ *     sessionExtra: { user: User };
  *   }
  * }
  */

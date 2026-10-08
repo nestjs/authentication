@@ -47,6 +47,14 @@ class NullingSessionStore extends InMemorySessionStore {
   }
 }
 
+/** `SELECT … FROM sessions JOIN users …`: reads the session's user with it, into `extra`. */
+class JoiningSessionStore extends InMemorySessionStore {
+  override async getSession(id: string) {
+    const record = await super.getSession(id);
+    return record && { ...record, extra: { user: { id: record.userId, email: `${record.userId}@example.com`, name: 'Ada', roles: [] } } };
+  }
+}
+
 /** `UPDATE sessions SET last_active_at = ?` without `AND last_active_at < ?`. */
 class BackwardsTouchSessionStore extends InMemorySessionStore {
   override async touchSession(id: string, lastActiveAt: Date) {
@@ -131,6 +139,10 @@ describe('the contract suite catches stores that are wrong without concurrency',
 });
 
 describe('authenticationStoreContract()', () => {
+  it('passes a store whose getSession() sets `extra`, which is read, not stored', async () => {
+    expect(await failures(() => ({ sessions: new JoiningSessionStore() }), { contracts: ['sessions'], concurrent: true })).toEqual({});
+  });
+
   it('refuses a maxPending that is not a positive integer', () => {
     for (const maxPending of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(() => authenticationStoreContract(inMemory, { maxPending })).toThrow(

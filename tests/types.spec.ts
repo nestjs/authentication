@@ -14,6 +14,8 @@ import {
   type AuthenticationModuleOptions,
   type AuthenticationOptionsFactory,
   type MfaStore,
+  type SessionExtra,
+  type SessionRecord,
   type SessionStore,
 } from '../lib/index.js';
 import { type User } from './fixtures.js';
@@ -39,6 +41,15 @@ export function contextTypes(auth: AuthenticationContext, custom: Authentication
   // @ts-expect-error the augmented user has no `tenant`
   void auth.user?.tenant;
   return [user, required, tenant];
+}
+
+// `SessionRecord.extra` is typed by `sessionExtra` on `AuthenticationTypes` (`{ user: User }` in fixtures.ts).
+export function sessionExtraTypes(session: SessionRecord) {
+  const extra: SessionExtra | undefined = session.extra;
+  const user: User | undefined = session.extra?.user;
+  // @ts-expect-error `extra` holds `{ user }`, not the user
+  const notUser: User | undefined = session.extra;
+  return [extra, user, notUser];
 }
 
 // Classes are never options: providers and handlers register with AuthenticationRegistry.

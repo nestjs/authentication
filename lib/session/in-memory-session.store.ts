@@ -17,7 +17,9 @@ export class InMemorySessionStore implements SessionStore {
   }
 
   async createSession(record: SessionRecord) {
-    this.sessions.set(record.id, { ...record });
+    // `extra` is read with a session, never stored.
+    const { extra: _, ...stored } = record;
+    this.sessions.set(record.id, stored);
     // The new session's own clock, so tests with a fake one agree.
     if (this.sessions.size >= this.sweepAt) {
       this.sweep(record.lastActiveAt.getTime());

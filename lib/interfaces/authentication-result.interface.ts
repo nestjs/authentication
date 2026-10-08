@@ -14,6 +14,14 @@ export type AuthenticatedSession = AuthenticationTypes extends { session: infer 
   : unknown;
 
 /**
+ * The type of `SessionRecord.extra` declared on {@link AuthenticationTypes}
+ * (`sessionExtra`), `unknown` otherwise.
+ */
+export type SessionExtra = AuthenticationTypes extends { sessionExtra: infer E }
+  ? E
+  : unknown;
+
+/**
  * `pending`: first factor done, second factor outstanding. Such a result
  * does not count as signed in: `SignInService.completeMfa()` finishes it.
  * `verified`: a second factor was presented. Required by

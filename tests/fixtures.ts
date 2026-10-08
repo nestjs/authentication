@@ -83,6 +83,7 @@ export interface User {
 declare module '../lib/index.js' {
   interface AuthenticationTypes {
     user: User;
+    sessionExtra: { user: User };
   }
 }
 

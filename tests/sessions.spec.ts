@@ -11,21 +11,23 @@ import {
   InMemoryRefreshTokenStore,
   InMemorySessionStore,
   MfaService,
+  SessionCookieProvider,
   SessionService,
   SignInService,
   TokenService,
   type AuthenticationEvent,
   type SessionOptions,
+  type SessionRecord,
 } from '../lib/index.js';
 import { AuthenticationScope } from '../lib/context/authentication-scope.service.js';
 import { base32Decode, hotp } from '../lib/mfa/otp.util.js';
-import { storageWith } from './fixtures.js';
+import { PROVIDER_INIT } from '../lib/providers/authentication.provider.js';
+import { storageWith, type User } from './fixtures.js';
 
 const T0 = 1_700_000_000_000;
 
-function sessionsWith(options: SessionOptions = {}) {
+function sessionsWith(options: SessionOptions = {}, store = new InMemorySessionStore()) {
   let clock = T0;
-  const store = new InMemorySessionStore();
   const events = new AuthenticationEvents();
   const seen: AuthenticationEvent[] = [];
   events.events$.subscribe((event) => seen.push(event));
@@ -36,6 +38,16 @@ function sessionsWith(options: SessionOptions = {}) {
     events,
   );
   return { sessions, store, seen, tick: (ms: number) => (clock += ms) };
+}
+
+/** `SELECT … FROM sessions JOIN users …`: the session's user, read with it into `extra`. */
+class JoiningSessionStore extends InMemorySessionStore {
+  readonly users = new Map<string, User>([['u1', { id: 'u1', email: 'ada@example.com', name: 'Ada', roles: [] }]]);
+  override async getSession(id: string) {
+    const record = await super.getSession(id);
+    const user = record && this.users.get(record.userId);
+    return record && { ...record, ...(user && { extra: { user } }) };
+  }
 }
 
 describe('SessionService', () => {
@@ -112,6 +124,27 @@ describe('SessionService', () => {
 
     const renamed = (await sessions.rotate(rotated.session, { metadata: { device: 'work laptop' } }))!;
     expect(renamed.session.metadata).toEqual({ device: 'work laptop' });
+  });
+
+  it('hands back the `extra` the store read with the session, and never stores it, rotations included', async () => {
+    const store = new JoiningSessionStore();
+    const { sessions, tick } = sessionsWith({}, store);
+    const create = vi.spyOn(store, 'createSession');
+    const { token } = await sessions.create('u1');
+
+    tick(10_000);
+    const session = (await sessions.validate(token))!;
+    expect(session.extra).toEqual({ user: store.users.get('u1') });
+
+    const rotated = (await sessions.rotate(session, { mfa: 'verified' }))!;
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(create.mock.calls[1][0]).not.toHaveProperty('extra');
+    expect(rotated.session).not.toHaveProperty('extra');
+
+    // The in-memory store doesn't keep an `extra` handed to it either.
+    const plain = new InMemorySessionStore();
+    await plain.createSession({ ...session, extra: { user: store.users.get('u1')! } });
+    expect(await plain.getSession(session.id)).not.toHaveProperty('extra');
   });
 
   it('sets the cookie’s Max-Age to the session’s remaining lifetime', async () => {
@@ -329,5 +362,40 @@ describe('SignInService', () => {
 
     const fromOwn = await inRequest(cookieHeader(bob.cookie), () => signIn.signOutEverywhere('u2'));
     expect(fromOwn.cookies).toEqual([expect.stringMatching(/^sid=; Max-Age=0; /)]);
+  });
+});
+
+describe('SessionCookieProvider', () => {
+  class SessionAuth extends SessionCookieProvider<User> {
+    readonly seen: SessionRecord[] = [];
+    validate(session: SessionRecord) {
+      this.seen.push(session);
+      // Typed by `sessionExtra` on `AuthenticationTypes` (tests/fixtures.ts).
+      const user: User | undefined = session.extra?.user;
+      return user ?? null;
+    }
+  }
+
+  function setup() {
+    const store = new JoiningSessionStore();
+    const { sessions } = sessionsWith({}, store);
+    const provider = new SessionAuth();
+    provider[PROVIDER_INIT]((() => sessions) as never);
+    const authenticate = (cookie: string) => {
+      const context = new ExecutionContextHost([{ headers: { cookie: cookie.split(';')[0] }, method: 'GET' }, {}]);
+      context.setType('http');
+      return provider.authenticate(context);
+    };
+    return { store, sessions, provider, authenticate };
+  }
+
+  it('hands validate() the `extra` the store read with the session, and leaves it out of the result', async () => {
+    const { store, sessions, provider, authenticate } = setup();
+    const { cookie, session } = await sessions.create('u1');
+
+    const result = await authenticate(cookie);
+    expect(provider.seen).toEqual([{ ...session, extra: { user: store.users.get('u1') } }]);
+    expect(result).toEqual({ user: store.users.get('u1'), session, mfa: undefined });
+    expect(result!.session).not.toHaveProperty('extra');
   });
 });

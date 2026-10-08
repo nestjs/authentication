@@ -1,4 +1,4 @@
-import type { MfaState } from './authentication-result.interface.js';
+import type { MfaState, SessionExtra } from './authentication-result.interface.js';
 
 export interface SessionRecord {
   /** SHA-256 of the cookie token. The token itself is never stored. */
@@ -12,6 +12,19 @@ export interface SessionRecord {
   mfa?: MfaState;
   /** App data: user agent, IP, device name, for "your sessions" pages. */
   metadata?: Record<string, unknown>;
+  /**
+   * Whatever `getSession()` read along with the session, typically its user
+   * from the same query (`JOIN users`), handed to
+   * `SessionCookieProvider.validate()` so a cookie request costs one read.
+   * Typed by `sessionExtra` on `AuthenticationTypes`.
+   *
+   * Never stored: `SessionService` leaves it out of every `createSession()`
+   * (rotations included), and `@CurrentSession()`, `request.session` and
+   * `AuthenticationContext.session` don't carry it. Join fresh data on every
+   * read; don't keep a copy of the user on the session row, which goes stale
+   * when the user changes.
+   */
+  extra?: SessionExtra;
 }
 
 /**
@@ -24,12 +37,16 @@ export interface SessionRecord {
  * from `SessionService`'s clock, never the store's.
  */
 export interface SessionStore {
-  /** The session, or `undefined`. Expired sessions may be returned: `SessionService` checks expiry. */
+  /**
+   * The session, or `undefined`. Expired sessions may be returned: `SessionService` checks expiry.
+   * May set `extra` to what the same query read with it (the user, joined), for
+   * `SessionCookieProvider.validate()`.
+   */
   getSession(id: string): Promise<SessionRecord | undefined>;
   /**
    * Saves a new session (a fresh random id: a plain insert). A good place
    * to delete sessions whose `expiresAt` has passed, so the store stays
-   * bounded.
+   * bounded. `record` never carries `extra`.
    */
   createSession(record: SessionRecord): Promise<void>;
   /**
@@ -48,7 +65,10 @@ export interface SessionStore {
    * rotations), only one may win.
    */
   deleteSession(id: string): Promise<boolean>;
-  /** The user's sessions, in any order (`[]` when none), expired ones included. */
+  /**
+   * The user's sessions, in any order (`[]` when none), expired ones included.
+   * Without `extra`: they feed "your sessions" pages.
+   */
   listUserSessions(userId: string): Promise<SessionRecord[]>;
   /** Deletes every session of the user ("sign out everywhere"). */
   deleteUserSessions(userId: string): Promise<void>;

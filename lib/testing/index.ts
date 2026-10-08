@@ -124,8 +124,8 @@ export function authenticationStoreContract(
       await store.createSession(record);
     }
 
-    same(await store.getSession(full.id), full, 'getSession() returns every field as saved');
-    same(await store.getSession(bare.id), bare, 'optional fields come back absent, not null');
+    same(stored(await store.getSession(full.id)), full, 'getSession() returns every field as saved');
+    same(stored(await store.getSession(bare.id)), bare, 'optional fields come back absent, not null');
     same(await store.getSession(id()), undefined, 'getSession() of an unknown id');
     same(sortIds(await store.listUserSessions(u1)), [full.id, bare.id].sort(), "listUserSessions() returns the user's sessions");
     same(await store.listUserSessions(uid()), [], 'listUserSessions() of a user without sessions');
@@ -136,7 +136,7 @@ export function authenticationStoreContract(
     same(await store.deleteSession(id()), false, 'deleteSession() of an unknown id resolves false');
     await store.deleteUserSessions(u1);
     same(await store.listUserSessions(u1), [], "deleteUserSessions() deletes the user's sessions");
-    same(await store.getSession(other.id), other, "deleteUserSessions() leaves other users' sessions alone");
+    same(stored(await store.getSession(other.id)), other, "deleteUserSessions() leaves other users' sessions alone");
   });
 
   add('sessions', 'touchSession() moves lastActiveAt forward only, and never recreates a deleted session', async ({ sessions: store }) => {
@@ -144,7 +144,7 @@ export function authenticationStoreContract(
     await store.createSession(record);
 
     await store.touchSession(record.id, at(5_000));
-    same(await store.getSession(record.id), { ...record, lastActiveAt: at(5_000) }, 'touchSession() changes lastActiveAt, nothing else');
+    same(stored(await store.getSession(record.id)), { ...record, lastActiveAt: at(5_000) }, 'touchSession() changes lastActiveAt, nothing else');
     await store.touchSession(record.id, at(1_000));
     same((await store.getSession(record.id))?.lastActiveAt, at(5_000), 'touchSession() never moves lastActiveAt back');
 
@@ -162,7 +162,7 @@ export function authenticationStoreContract(
     await store.createSession(expired);
     await store.createSession(session(user, { createdAt: at(2_000), lastActiveAt: at(2_000) }));
 
-    same(await store.getSession(idle.id), idle, 'a session idle for a long time, but within its absolute expiry, is kept');
+    same(stored(await store.getSession(idle.id)), idle, 'a session idle for a long time, but within its absolute expiry, is kept');
     const left = await store.getSession(expired.id);
     assert.ok(left === undefined || left.expiresAt <= at(2_000), 'a pruned session is gone, or still past its expiry');
   });
@@ -748,6 +748,15 @@ function emailToken(overrides: Partial<EmailTokenRecord> = {}): EmailTokenRecord
 }
 
 const sortIds = (records: { id: string }[]) => records.map((record) => record.id).sort();
+
+/** A session as stored: without the `extra` a store may read along with it. */
+function stored(record: SessionRecord | undefined): Omit<SessionRecord, 'extra'> | undefined {
+  if (!record) {
+    return record;
+  }
+  const { extra: _, ...rest } = record;
+  return rest;
+}
 
 /** Deep equality where a missing key and an `undefined` one are the same, and `null` is not `undefined`. */
 function same(actual: unknown, expected: unknown, message: string): void {
