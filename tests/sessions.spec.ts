@@ -94,6 +94,48 @@ describe('SessionService', () => {
     }
   });
 
+  it('warns once per spell of touch failures, publishing each, and logs once when a touch succeeds again', async () => {
+    const { sessions, store, seen, tick } = sessionsWith();
+    const { token, session } = await sessions.create('u1');
+    const failure = new Error('read-only replica');
+    const touchSession = store.touchSession.bind(store);
+    let down = true;
+    vi.spyOn(store, 'touchSession').mockImplementation((id, at) => (down ? Promise.reject(failure) : touchSession(id, at)));
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const log = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+
+    try {
+      for (let i = 0; i < 3; i++) {
+        tick(10_000);
+        expect(await sessions.validate(token)).toMatchObject({ id: session.id });
+      }
+      expect(seen).toEqual(Array(3).fill({ type: 'session-touch-failed', userId: 'u1', sessionId: session.id, error: failure }));
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain('read-only replica');
+      expect(log).not.toHaveBeenCalled();
+
+      // The next successful touch ends the spell: one line, with the count.
+      down = false;
+      tick(10_000);
+      await sessions.validate(token);
+      tick(10_000);
+      await sessions.validate(token);
+      expect(log).toHaveBeenCalledTimes(1);
+      expect(String(log.mock.calls[0][0])).toContain('3 touches failed');
+      expect(warn).toHaveBeenCalledTimes(1);
+
+      // A new spell warns again.
+      down = true;
+      tick(10_000);
+      await sessions.validate(token);
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(seen).toHaveLength(4);
+    } finally {
+      warn.mockRestore();
+      log.mockRestore();
+    }
+  });
+
   it('with idleTtl 0, keeps an idle session until its absolute expiry', async () => {
     const { sessions, tick } = sessionsWith({ idleTtl: 0 });
     const { token } = await sessions.create('u1');

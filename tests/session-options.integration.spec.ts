@@ -185,6 +185,7 @@ describe.each(adapters.map((a) => a.name))('session options (%s)', (adapter) => 
       const failure = new Error('lock wait timeout exceeded');
       const touch = vi.spyOn(store, 'touchSession').mockRejectedValueOnce(failure);
       const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      const log = vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
       const fromStream: AuthenticationEvent[] = [];
       const fromChannel: unknown[] = [];
       const onChannel = (message: unknown) => void fromChannel.push(message);
@@ -204,13 +205,17 @@ describe.each(adapters.map((a) => a.name))('session options (%s)', (adapter) => 
           expect.stringContaining(`Recording activity on a session of user ${userId} failed`),
         );
 
-        // The next request records the activity.
+        // The next request records the activity, and says recording works again.
         await http().get('/me').set('Cookie', cookie).expect(200, { id: userId });
         expect((await session(cookie))!.lastActiveAt.getTime()).toBe(clock);
+        expect(log.mock.calls.map(([message]) => String(message))).toContainEqual(
+          expect.stringContaining('Recording session activity works again; 1 touch failed meanwhile.'),
+        );
       } finally {
         unsubscribe('nestjs:authentication:session-touch-failed', onChannel);
         subscription.unsubscribe();
         warn.mockRestore();
+        log.mockRestore();
         touch.mockRestore();
       }
     });

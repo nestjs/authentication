@@ -34,6 +34,8 @@ export class SessionService {
   private readonly touchInterval: number;
   private readonly cookieName: string;
   private readonly trustedOrigins: ReadonlySet<string>;
+  /** Touches failed since the last successful one: a spell of failures logs one warning, not one per request. */
+  private failedTouches = 0;
 
   constructor(
     private readonly storage: AuthenticationStorage,
@@ -224,21 +226,33 @@ export class SessionService {
 
   /**
    * Records activity, best-effort: the session was read live, so a failed write (a lock timeout,
-   * a read-only replica) does not fail the request. It is logged and published as
-   * `session-touch-failed`, and the session keeps the idle deadline the store still has.
+   * a read-only replica) does not fail the request, and the session keeps the idle deadline the
+   * store still has. Every failure is published as `session-touch-failed`; the log gets one warning
+   * per spell of failures (the first), then one line once a touch succeeds again, with how many
+   * failed in between.
    */
   private async touch(record: SessionRecord, lastActiveAt: Date): Promise<void> {
     try {
       await this.storage.sessions.touchSession(record.id, lastActiveAt);
     } catch (error) {
-      SessionService.logger.warn(
-        `Recording activity on a session of user ${record.userId} failed, so its idle timeout did not move: ` +
-          (error instanceof Error ? error.message : String(error)),
-      );
+      if (this.failedTouches++ === 0) {
+        SessionService.logger.warn(
+          `Recording activity on a session of user ${record.userId} failed, so its idle timeout did not move: ` +
+            (error instanceof Error ? error.message : String(error)) +
+            '. Further failures are not logged until a touch succeeds again.',
+        );
+      }
+      // Published on every failure, logged or not, so metrics and alerting count them all.
       this.events.emit({ type: 'session-touch-failed', userId: record.userId, sessionId: record.id, error });
       return;
     }
     record.lastActiveAt = lastActiveAt;
+    if (this.failedTouches > 0) {
+      SessionService.logger.log(
+        `Recording session activity works again; ${this.failedTouches} ${this.failedTouches === 1 ? 'touch' : 'touches'} failed meanwhile.`,
+      );
+      this.failedTouches = 0;
+    }
   }
 
   private isLive(record: SessionRecord, now: number): boolean {

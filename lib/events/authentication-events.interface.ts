@@ -137,7 +137,7 @@ export interface AuthenticationMagicLinkRefusedEvent {
  * replica, an outage. The request went on with the session as read, and
  * its idle timeout did not move: unless a later request records activity,
  * the session ends at its previous idle deadline. Each request in a spell
- * of failures publishes one.
+ * of failures publishes one, though `SessionService` logs only the first.
  */
 export interface AuthenticationSessionTouchFailedEvent {
   type: 'session-touch-failed';
