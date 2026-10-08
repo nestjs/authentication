@@ -7,6 +7,7 @@
  * the apps sharing a user database have to configure them alike.
  */
 import { Injectable, Logger, Module, type INestApplicationContext, type Provider } from '@nestjs/common';
+import { ExecutionContextHost } from '@nestjs/core/internal';
 import { Test } from '@nestjs/testing';
 import { CONTRACTS_BY_FEATURE } from '../lib/storage/authentication.storage.js';
 import {
@@ -300,7 +301,7 @@ describe('the production guard and what the features read', () => {
         },
       },
       {
-        feature: 'accessToken',
+        feature: 'refreshToken',
         options: () => ({ providers: [new Bearer()], options: { accessToken: { key: KEY } } }),
         contracts: ['refreshTokens'],
         flows: async (app) => {
@@ -437,6 +438,80 @@ describe('the production guard and what the features read', () => {
 
     it('with nothing configured that keeps state, nothing is asked for', async () => {
       moduleRef = await start({}, storesFor(new World(), []));
+    });
+  });
+
+  describe('`refreshToken: false`: access tokens alone', () => {
+    const bearer = (token: string) => {
+      const context = new ExecutionContextHost([{ headers: { authorization: `Bearer ${token}` } }, {}]);
+      context.setType('http');
+      return context;
+    };
+
+    it('starts without a RefreshTokenStore and issues access tokens the bearer provider accepts, reading no store', async () => {
+      const world = new World();
+      const provider = new Bearer();
+      moduleRef = await start(
+        { providers: [provider], options: { accessToken: { key: KEY }, refreshToken: false } },
+        storesFor(world, []),
+      );
+      const tokens = moduleRef.get(TokenService);
+
+      const issued = await tokens.issue('u1', { claims: { amr: ['pwd'] } });
+      expect(Object.keys(issued).sort()).toEqual(['accessToken', 'expiresIn']);
+      await expect(provider.authenticate(bearer(issued.accessToken))).resolves.toMatchObject({
+        user: { id: 'u1' },
+        session: { sub: 'u1', amr: ['pwd'] },
+      });
+
+      const disabled = 'refresh tokens are disabled (`refreshToken: false`';
+      await expect(tokens.refresh('A'.repeat(43))).rejects.toThrow(disabled);
+      await expect(tokens.revoke('A'.repeat(43))).rejects.toThrow(disabled);
+      await expect(tokens.revokeAll('u1')).resolves.toBeUndefined();
+      expect([...world.touched]).toEqual([]);
+    });
+
+    it('a session cookie app with access tokens alone needs only sessions, and signs out everywhere', async () => {
+      const world = new World();
+      moduleRef = await start(
+        { providers: [new Sessions(), new Bearer()], options: { accessToken: { key: KEY }, refreshToken: false } },
+        storesFor(world, ['sessions']),
+      );
+      const signIn = moduleRef.get(SignInService);
+
+      const { token } = await signIn.signIn('u1');
+      await moduleRef.get(TokenService).issue('u1');
+      await signIn.signOutEverywhere('u1');
+      expect(await moduleRef.get(SessionService).validate(token)).toBeNull();
+      expect([...world.touched]).toEqual(['sessions']);
+    });
+
+    it('still asks a user with an authenticator for the second factor, and records it in `amr`', async () => {
+      const world = new World();
+      moduleRef = await start(
+        { providers: [new Bearer()], options: { accessToken: { key: KEY }, refreshToken: false, mfa: { encryption: false } } },
+        storesFor(world, ['mfa']),
+      );
+      const mfa = moduleRef.get(MfaService);
+      const { secret } = await mfa.enroll('u1', 'u1@example.com');
+      const step = totpStep(Math.floor(Date.now() / 1000));
+      expect(await mfa.confirm('u1', hotp(base32Decode(secret), step))).toBe(true);
+
+      const tokens = moduleRef.get(TokenService);
+      await expect(tokens.issue('u1')).rejects.toMatchObject({ code: 'mfa_required' });
+      const issued = await tokens.issue('u1', { secondFactor: { code: hotp(base32Decode(secret), step + 1) } });
+      expect(issued).not.toHaveProperty('refreshToken');
+      expect(JSON.parse(Buffer.from(issued.accessToken.split('.')[1]!, 'base64url').toString())).toMatchObject({
+        sub: 'u1',
+        amr: ['mfa'],
+      });
+      expect(world.touched.has('refreshTokens')).toBe(false);
+    });
+
+    it('warns when there are no access tokens to turn refresh tokens off for', async () => {
+      const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+      moduleRef = await start({ options: { refreshToken: false } }, storesFor(new World(), []));
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('`refreshToken: false` has no effect without `accessToken`'));
     });
   });
 

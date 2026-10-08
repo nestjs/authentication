@@ -171,7 +171,7 @@ export class SignInService {
   }
 
   /**
-   * Ends every session and, with `accessToken` configured, every
+   * Ends every session and, with refresh tokens on (`accessToken`), every
    * refresh-token family of the user, and clears this browser's cookie if it
    * was one of them. API keys live in your own table: revoke those yourself.
    */

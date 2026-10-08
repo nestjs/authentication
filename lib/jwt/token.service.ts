@@ -11,7 +11,7 @@ import type { JwtSignerOptions } from '../interfaces/jwt-options.interface.js';
 import { RefreshTokenError } from '../errors/refresh-token.error.js';
 import type { RefreshTokenOptions } from '../interfaces/refresh-token-options.interface.js';
 import type { RefreshTokenRecord } from '../interfaces/refresh-token-store.interface.js';
-import type { IssueTokensOptions, TokenPair } from '../interfaces/token.interface.js';
+import type { AccessTokenResult, IssueTokensOptions, IssuedTokens, TokenPair } from '../interfaces/token.interface.js';
 import { MFA_AMR_VALUES } from './amr.util.js';
 import { JwtSigner } from './jwt-signer.service.js';
 
@@ -30,6 +30,12 @@ import { JwtSigner } from './jwt-signer.service.js';
  *   concurrent presentations (`markRefreshTokenUsed()` is a compare-and-set), means two
  *   parties hold it: the whole family is revoked, and both have to sign in
  *   again (OAuth 2.0 Security BCP §4.14.2).
+ * - With `refreshToken: false`, there are none: `issue()` returns an access
+ *   token alone and stores nothing, `refresh()` and `revoke()` throw, and
+ *   `revokeAll()` does nothing. For a service that signs short-lived access
+ *   tokens and asks the client to sign in again; a service that only
+ *   verifies tokens can also leave `accessToken` out and give its
+ *   `JwtBearerProvider` the key (`super({ key })`).
  */
 @Injectable()
 export class TokenService {
@@ -41,16 +47,19 @@ export class TokenService {
   private readonly ttl: number;
   private readonly absoluteTtl: number;
   private readonly clock?: () => number;
+  /** `refreshToken: false`: access tokens only, no families. */
+  private readonly refreshTokensOff: boolean;
 
   constructor(
     private readonly storage: AuthenticationStorage,
     @Optional()
     @Inject(AUTHENTICATION_MODULE_OPTIONS)
-    options?: { accessToken?: JwtSignerOptions; refreshToken?: RefreshTokenOptions },
+    options?: { accessToken?: JwtSignerOptions; refreshToken?: RefreshTokenOptions | false },
     private readonly events: AuthenticationEvents = new AuthenticationEvents(),
     private readonly mfa: MfaService = new MfaService(storage),
   ) {
-    const refresh = options?.refreshToken ?? {};
+    this.refreshTokensOff = options?.refreshToken === false;
+    const refresh = options?.refreshToken || {};
     this.ttl = durationOr(refresh.ttl, '30d');
     this.absoluteTtl = durationOr(refresh.absoluteTtl, '90d');
     this.clock = refresh.now;
@@ -70,6 +79,8 @@ export class TokenService {
 
   /**
    * At sign-in: signs an access token and starts a refresh-token family.
+   * With `refreshToken: false`, returns the access token alone (typed by
+   * {@link IssuedTokens}), and stores nothing.
    *
    * With `mfa` configured, a user with a confirmed authenticator must send a second factor
    * (`secondFactor`). Without one, `issue()` throws an
@@ -79,11 +90,23 @@ export class TokenService {
    * `@Authenticate({ mfa: true })` accepts; `claims.amr` cannot (see
    * {@link IssueTokensOptions.claims}).
    */
-  async issue(userId: string, { claims, method, secondFactor }: IssueTokensOptions = {}): Promise<TokenPair> {
+  async issue(userId: string, { claims, method, secondFactor }: IssueTokensOptions = {}): Promise<IssuedTokens> {
     const signer = this.requireSigner();
     const verified = await this.checkSecondFactor(userId, secondFactor);
     const own = this.ownClaims(claims);
     const familyClaims = verified ? { ...own, amr: [...(own?.amr ?? []), 'mfa'] } : own;
+
+    if (this.refreshTokensOff) {
+      this.events.emit({
+        type: 'sign-in',
+        userId,
+        ...(method && { method }),
+        ...(verified && { mfa: 'verified' as const }),
+      });
+      const issued: AccessTokenResult = { accessToken: signer.sign({ ...familyClaims, sub: userId }), expiresIn: this.expiresIn };
+      return issued as IssuedTokens;
+    }
+
     const familyExpiresAt = new Date(this.now() + this.absoluteTtl);
     const { token, record } = await this.create(userId, randomToken(16), familyExpiresAt, familyClaims);
 
@@ -95,16 +118,18 @@ export class TokenService {
       ...(verified && { mfa: 'verified' as const }),
     });
 
-    return this.pair(signer, token, record);
+    return this.pair(signer, token, record) as IssuedTokens;
   }
 
   /**
    * Spends a refresh token: returns its successor, and an access token with
    * the family's claims. Throws {@link RefreshTokenError} (`invalid`,
-   * `expired`, `reused`), which a route answers with 401.
+   * `expired`, `reused`), which a route answers with 401. Throws without
+   * `accessToken`, and with `refreshToken: false`.
    */
   async refresh(refreshToken: string): Promise<TokenPair> {
     const signer = this.requireSigner();
+    this.requireRefreshTokens('refresh');
     if (typeof refreshToken !== 'string' || !TOKEN_PATTERN.test(refreshToken)) {
       throw new RefreshTokenError('invalid');
     }
@@ -147,10 +172,12 @@ export class TokenService {
    * Signs out the client holding `refreshToken` (one device): revokes its
    * family. Spent tokens of the family work too. Resolves `false` for
    * unknown or malformed tokens, which a route should not reveal (RFC 7009
-   * §2.2). Throws without `accessToken`, as `refresh()` does.
+   * §2.2). Throws without `accessToken`, and with `refreshToken: false`, as
+   * `refresh()` does.
    */
   async revoke(refreshToken: string): Promise<boolean> {
     this.requireSigner();
+    this.requireRefreshTokens('revoke');
     if (typeof refreshToken !== 'string' || !TOKEN_PATTERN.test(refreshToken)) {
       return false;
     }
@@ -168,14 +195,15 @@ export class TokenService {
 
   /**
    * Signs the user out of every token client. Issued access tokens live
-   * until they expire. Without `accessToken`, this app issues no refresh
-   * tokens, and there is nothing to revoke: the store is not read. Apps that
+   * until they expire. Without `accessToken`, or with `refreshToken: false`,
+   * this app issues no refresh tokens, and there is nothing to revoke: the
+   * store is not read. Apps that
    * share a user database configure `accessToken` in all of them if any of
    * them issues tokens: otherwise this one's sign-outs everywhere leave the
    * token clients of the others signed in.
    */
   async revokeAll(userId: string): Promise<void> {
-    if (!this.signer) {
+    if (!this.signer || this.refreshTokensOff) {
       return;
     }
     await this.storage.refreshTokens.revokeUserRefreshTokens(userId);
@@ -204,6 +232,12 @@ export class TokenService {
   private pair(signer: JwtSigner, refreshToken: string, record: RefreshTokenRecord): TokenPair {
     const accessToken = signer.sign({ ...record.claims, sub: record.userId });
     return { accessToken, refreshToken, expiresIn: this.expiresIn };
+  }
+
+  private requireRefreshTokens(method: string): void {
+    if (this.refreshTokensOff) {
+      throw new Error(`TokenService.${method}(): refresh tokens are disabled (\`refreshToken: false\` in the AuthenticationModule options)`);
+    }
   }
 
   private requireSigner(): JwtSigner {

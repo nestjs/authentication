@@ -23,8 +23,9 @@ import type {
  * paths: the production guard's rule.
  * MFA is off unless `mfa` is configured: without it, `MfaService.isEnrolled()`
  * answers `false` without reading the store, and its other methods throw.
- * Refresh tokens exist only with `accessToken`: without it,
- * `TokenService.revokeAll()` has nothing to revoke and reads nothing. Apps
+ * Refresh tokens exist only with `accessToken`, and not with
+ * `refreshToken: false`: otherwise `TokenService.issue()` starts no family
+ * and `revokeAll()` has nothing to revoke and reads nothing. Apps
  * that sign users in from a shared user database must therefore agree: if
  * one configures `mfa` (or `accessToken`), every one of them must, or a user
  * who enrolled an authenticator through one signs in to another with a
@@ -37,8 +38,12 @@ export const CONTRACTS_BY_FEATURE = {
    * request), `SignInService.signIn()` and `signOutEverywhere()`.
    */
   sessionCookie: ['sessions'],
-  /** `accessToken`: `TokenService` (refresh-token families), which every sign-out everywhere revokes too. */
-  accessToken: ['refreshTokens'],
+  /**
+   * `accessToken` without `refreshToken: false`: the refresh-token families
+   * `TokenService` starts, which every sign-out everywhere revokes too.
+   * Access tokens alone keep no state.
+   */
+  refreshToken: ['refreshTokens'],
   /** `mfa`: enrollment, codes, recovery codes and the lockout; every sign-in checks for an authenticator. */
   mfa: ['mfa'],
   /** `magicLinkHandler`: pending links, then `SignInService.signIn()`. */
@@ -47,7 +52,7 @@ export const CONTRACTS_BY_FEATURE = {
   oidc: ['sessions', 'oidcStates'],
   /**
    * `passwordResetHandler`: the links; `reset()` revokes every session (and
-   * refresh-token family, with `accessToken`) of the user, and with
+   * refresh-token family, with refresh tokens on) of the user, and with
    * `signIn: true` signs in.
    */
   passwordReset: ['sessions', 'emailTokens'],

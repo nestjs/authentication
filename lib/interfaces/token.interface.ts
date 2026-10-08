@@ -1,3 +1,5 @@
+import type { AuthenticationTypes } from '../index.js';
+
 export interface IssueTokensOptions {
   /**
    * Claims that describe the sign-in (`amr`, `auth_time`, …): this access
@@ -17,12 +19,38 @@ export interface IssueTokensOptions {
   secondFactor?: { code?: string; recoveryCode?: string };
 }
 
-/** What a token endpoint returns to a client that signed in. */
-export interface TokenPair {
+/**
+ * What `TokenService.issue()` returns with `refreshToken: false`: an access
+ * token alone, which the client replaces by signing in again.
+ */
+export interface AccessTokenResult {
   /** A JWT signed with the `accessToken` options. */
   accessToken: string;
-  /** Opaque, single use: `refresh()` exchanges it for a new pair. */
-  refreshToken: string;
   /** Seconds until the access token expires (OAuth's `expires_in`). */
   expiresIn: number;
 }
+
+/** What a token endpoint returns to a client that signed in. */
+export interface TokenPair extends AccessTokenResult {
+  /** Opaque, single use: `refresh()` exchanges it for a new pair. */
+  refreshToken: string;
+}
+
+/**
+ * What `TokenService.issue()` returns: a {@link TokenPair}, or, for an app
+ * that declared `refreshTokens: false` on `AuthenticationTypes` (to go with
+ * the `refreshToken: false` option), an {@link AccessTokenResult}:
+ *
+ * ```ts
+ * declare module '@nestjs/authentication' {
+ *   interface AuthenticationTypes {
+ *     refreshTokens: false;
+ *   }
+ * }
+ * ```
+ *
+ * The declaration is what the compiler sees; the option is what runs. An
+ * app that sets the option without the declaration gets no `refreshToken`
+ * at run time, typed as a string, and `refresh()` throws on it.
+ */
+export type IssuedTokens<Types = AuthenticationTypes> = Types extends { refreshTokens: false } ? AccessTokenResult : TokenPair;

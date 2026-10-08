@@ -27,7 +27,19 @@ export interface AuthenticationModuleOptions {
    * verifies unless it is given its own `key` or `jwks`.
    */
   accessToken?: JwtSignerOptions;
-  refreshToken?: RefreshTokenOptions;
+  /**
+   * The refresh tokens `TokenService` issues with each access token, on by
+   * default with `accessToken` (which then needs a `RefreshTokenStore`).
+   * `false` turns them off: `issue()` returns an access token alone and
+   * starts no family, `refresh()` and `revoke()` throw, `revokeAll()` does
+   * nothing, and no `RefreshTokenStore` is needed. For a service that signs
+   * its own short-lived access tokens, or one that only verifies them
+   * (which can also leave `accessToken` out and give its
+   * `JwtBearerProvider` the key: `super({ key })`). Declare
+   * `refreshTokens: false` on `AuthenticationTypes` to type `issue()`
+   * accordingly ({@link IssuedTokens}).
+   */
+  refreshToken?: RefreshTokenOptions | false;
   /** Goes with a registered `OidcAccountResolver` (`'oidc'`): each fails at startup without the other. */
   oidc?: OidcOptions;
   /** Goes with a registered `PasswordResetHandler` (`'passwordReset'`): each fails at startup without the other. */

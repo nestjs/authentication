@@ -50,6 +50,7 @@ export {
 
 // Options, store contracts and public types
 export type {
+  AccessTokenResult,
   ApiKeyProviderOptions,
   ApiKeyRecord,
   ApiKeySession,
@@ -73,6 +74,7 @@ export type {
   EmailVerificationOptions,
   GeneratedApiKey,
   IssuedSession,
+  IssuedTokens,
   IssueTokensOptions,
   JwksClientOptions,
   JwsAlgorithm,
@@ -160,9 +162,11 @@ export { github, google, microsoft } from './oidc/oidc.presets.js';
 
 /**
  * Augment once per app to type `@CurrentUser('key')`,
- * `AuthenticationContext.user` and `AuthenticationContext.session`, and
+ * `AuthenticationContext.user` and `AuthenticationContext.session`,
  * (`sessionExtra`) what a `SessionStore` reads with each session for
- * `SessionCookieProvider.validate()` (`SessionRecord.extra`):
+ * `SessionCookieProvider.validate()` (`SessionRecord.extra`), and
+ * (`refreshTokens: false`, with the `refreshToken: false` option) that
+ * `TokenService.issue()` returns no refresh token ({@link IssuedTokens}):
  *
  * @example
  * declare module '@nestjs/authentication' {

@@ -46,7 +46,9 @@ export const startupChecks: Provider = {
   useFactory: (resolved: AuthenticationModuleOptions | undefined) => {
     const options = resolved ?? {};
     checkKeys(options);
-    warnShortLifetimes(options, new Logger('AuthenticationModule'));
+    const logger = new Logger('AuthenticationModule');
+    warnShortLifetimes(options, logger);
+    warnIdleSwitches(options, logger);
     return options;
   },
 };
@@ -67,7 +69,8 @@ export const storageRequirements: Provider = {
 
       const enabled: Record<AuthenticationFeature, boolean> = {
         sessionCookie: registry.providers.some((provider) => provider instanceof SessionCookieProvider),
-        accessToken: options.accessToken !== undefined,
+        // With `accessToken`, unless turned off: they are what `issue()` stores.
+        refreshToken: options.accessToken !== undefined && options.refreshToken !== false,
         mfa: options.mfa !== undefined,
         // With their handlers: the registry refuses one without the other.
         magicLink: options.magicLink !== undefined,
@@ -138,11 +141,20 @@ function checkKeys(options: AuthenticationModuleOptions) {
   }
 }
 
+/** A switch that turns off what isn't on: harmless, and likely a forgotten option. */
+function warnIdleSwitches(options: AuthenticationModuleOptions, logger: Logger) {
+  if (options.refreshToken === false && options.accessToken === undefined) {
+    logger.warn(
+      '`refreshToken: false` has no effect without `accessToken`: refresh tokens are only issued with access tokens.',
+    );
+  }
+}
+
 /** The lifetimes: what `@nestjs/jwt` and jsonwebtoken users are used to giving in seconds. */
 const LIFETIMES: [path: string, read: (options: AuthenticationModuleOptions) => Duration | undefined][] = [
   ['accessToken.ttl', (options) => options.accessToken?.ttl],
-  ['refreshToken.ttl', (options) => options.refreshToken?.ttl],
-  ['refreshToken.absoluteTtl', (options) => options.refreshToken?.absoluteTtl],
+  ['refreshToken.ttl', (options) => (options.refreshToken || undefined)?.ttl],
+  ['refreshToken.absoluteTtl', (options) => (options.refreshToken || undefined)?.absoluteTtl],
   ['session.absoluteTtl', (options) => options.session?.absoluteTtl],
   ['session.idleTtl', (options) => options.session?.idleTtl],
   ['mfa.pendingTtl', (options) => options.mfa?.pendingTtl],

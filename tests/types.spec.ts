@@ -17,6 +17,9 @@ import {
   type SessionExtra,
   type SessionRecord,
   type SessionStore,
+  type IssuedTokens,
+  type TokenPair,
+  type TokenService,
 } from '../lib/index.js';
 import { type User } from './fixtures.js';
 
@@ -170,6 +173,22 @@ export const namedKeys: AuthenticationModuleOptions = {
   // @ts-expect-error no user-supplied key ids
   mfa: { encryption: { keys: [{ id: '2026-09', key: 'k'.repeat(32) }] } },
 };
+
+// `refreshToken: false` takes no refresh-token options alongside it.
+export const accessTokensOnly: AuthenticationModuleOptions = { accessToken: { key: 'k'.repeat(32) }, refreshToken: false };
+// @ts-expect-error `true` is not a value of `refreshToken`
+export const refreshTrue: AuthenticationModuleOptions = { refreshToken: true };
+
+export async function issuedTypes(tokens: TokenService) {
+  // Without the `refreshTokens: false` declaration, issue() still returns a pair.
+  const pair: TokenPair = await tokens.issue('u1');
+  const off: IssuedTokens<{ refreshTokens: false }> = { accessToken: 'a', expiresIn: 1 };
+  // @ts-expect-error no refresh token with `refreshTokens: false`
+  const missing: string = off.refreshToken;
+  // @ts-expect-error a pair has its refresh token
+  const incomplete: IssuedTokens<{}> = { accessToken: 'a', expiresIn: 1 };
+  return [pair, missing, incomplete];
+}
 
 export class Routes {
   @Authenticate({ providers: [SessionCookieProvider], mfa: true })
