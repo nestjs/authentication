@@ -57,7 +57,7 @@
     "@nestjs/platform-express": "12.1.2",
     "@nestjs/platform-fastify": "12.1.2",
     "@nestjs/platform-ws": "12.1.2",
-    "@nestjs/resilience": "0.0.1",
+    "@nestjs/resilience": "0.0.2",
     "@nestjs/testing": "12.1.2",
     "@nestjs/throttler": "6.7.1",
     "@nestjs/websockets": "12.1.2",
