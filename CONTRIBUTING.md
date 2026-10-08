@@ -147,7 +147,9 @@ from the main (upstream) repository:
 
 ## <a name="development"></a> Development Setup
 
-You need Node.js 20.19 or newer. To run the suites that use a database, you also need PostgreSQL.
+You need Node.js 22.12 or newer to work on the package (vitest requires it), although the published
+package supports Node.js 20.19 and newer. To run the suites that use a database, you also need
+PostgreSQL.
 
 ```shell
 npm install
@@ -167,8 +169,8 @@ The database specs get PostgreSQL in one of two ways:
 CI also type-checks the specs (`npx tsc -p tsconfig.json --noEmit`) and runs the suite against
 both the oldest supported NestJS release (12.0) and the latest 12.x.
 
-Husky hooks run `lint-staged` before each commit and `commitlint` on the message, so a commit that
-does not follow the [commit message conventions](#commit) is rejected.
+A Husky hook runs `commitlint` on each commit message, so a commit that does not follow the
+[commit message conventions](#commit) is rejected.
 
 ## <a name="rules"></a> Coding Rules
 To ensure consistency throughout the source code, keep these rules in mind as you are working:
@@ -177,8 +179,8 @@ To ensure consistency throughout the source code, keep these rules in mind as yo
 <!--
 // We're working on auto-documentation.
 * All public API methods **must be documented**. (Details TBC). -->
-* We follow [Google's JavaScript Style Guide][js-style-guide], but wrap all code at
-  **100 characters**. Format your changes with `npm run format` (Prettier).
+* We follow [Google's JavaScript Style Guide][js-style-guide]. Match the formatting of the
+  surrounding code, and keep formatting changes to unrelated code out of your PR.
 
 ## <a name="commit"></a> Commit Message Guidelines
 
@@ -211,7 +213,7 @@ Samples: (even more [samples](https://github.com/nestjs/authentication/commits/m
 docs(changelog): update change log to beta.5
 ```
 ```
-fix(mfa): reject a TOTP step that was already used
+fix(mfa): reject a one-time code that was already used
 
 A code accepted once must not be accepted again within the same time step.
 ```

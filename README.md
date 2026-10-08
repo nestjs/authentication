@@ -77,15 +77,21 @@ export class AppController {
     return 'ok';
   }
 
-  @Authenticate({ mfa: true })
   @Get('me')
   me(@CurrentUser() user: User) {
     return user;
   }
+
+  // Anonymous callers get through too: `user` is then `null`.
+  @Authenticate({ optional: true })
+  @Get('greeting')
+  greeting(@CurrentUser() user: User | null) {
+    return user ? `Hello, ${user.email}` : 'Hello, guest';
+  }
 }
 ```
 
-The in-memory stores are fine in development. In production, startup fails until you register a store for each feature you use with `AuthenticationStorage.registerSource()`, or you set `allowInMemoryStorage: true`. Read [Overview & Tutorial](https://docs.nestjs.com/security/authentication) for sessions, refresh tokens, TOTP, magic links, OIDC and account flows.
+The in-memory stores are fine in development. In production, startup fails until you register real stores with `AuthenticationStorage.registerSource()` for everything your features use (`accessToken` alone uses the `refreshTokens` and `mfa` stores), or you set `allowInMemoryStorage: true`. Read [Overview & Tutorial](https://docs.nestjs.com/security/authentication) for sessions, refresh tokens, TOTP, magic links, OIDC and account flows.
 
 ## Support
 
