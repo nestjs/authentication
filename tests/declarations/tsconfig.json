@@ -1,0 +1,15 @@
+{
+  // Resolves `@nestjs/authentication` through the package's own `exports`, so
+  // it type-checks against `dist` (run `npm run build` first).
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "target": "ES2022",
+    "strict": true,
+    "experimentalDecorators": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "files": ["consumer.ts"]
+}

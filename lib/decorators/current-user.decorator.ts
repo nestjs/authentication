@@ -7,7 +7,11 @@ import type { AuthenticatedUser } from '../interfaces/authentication-result.inte
  * calls. `@CurrentUser('email')` picks one property; the key is checked
  * against the `AuthenticationTypes` augmentation.
  */
-export const CurrentUser = createParamDecorator<keyof AuthenticatedUser | undefined>(
+// Annotated so the emitted .d.ts keeps `keyof AuthenticatedUser`: inferred, it
+// is resolved at build time against the unaugmented user and becomes `string`.
+export const CurrentUser: ReturnType<
+  typeof createParamDecorator<keyof AuthenticatedUser | undefined>
+> = createParamDecorator<keyof AuthenticatedUser | undefined>(
   (key, context: ExecutionContext) => {
     const user = resultOf(context)?.user ?? null;
     return key && user ? user[key] : user;
