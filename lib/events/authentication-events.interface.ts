@@ -131,6 +131,22 @@ export interface AuthenticationMagicLinkRefusedEvent {
   email?: string;
 }
 
+/**
+ * A request's session was valid, but recording its activity
+ * (`SessionStore.touchSession()`) failed: a lock timeout, a read-only
+ * replica, an outage. The request went on with the session as read, and
+ * its idle timeout did not move: unless a later request records activity,
+ * the session ends at its previous idle deadline. Each request in a spell
+ * of failures publishes one.
+ */
+export interface AuthenticationSessionTouchFailedEvent {
+  type: 'session-touch-failed';
+  userId: string;
+  sessionId: string;
+  /** What `touchSession()` rejected with. */
+  error: unknown;
+}
+
 export type AuthenticationEvent =
   | AuthenticationSignInEvent
   | AuthenticationSignOutEvent
@@ -143,4 +159,5 @@ export type AuthenticationEvent =
   | AuthenticationPasswordResetRequestedEvent
   | AuthenticationPasswordResetEvent
   | AuthenticationEmailVerifiedEvent
-  | AuthenticationMagicLinkRefusedEvent;
+  | AuthenticationMagicLinkRefusedEvent
+  | AuthenticationSessionTouchFailedEvent;

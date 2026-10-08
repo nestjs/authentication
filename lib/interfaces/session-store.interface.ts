@@ -38,6 +38,11 @@ export interface SessionStore {
    * WHERE id = ? AND last_active_at < ?`, `SET … XX` in Redis. A read
    * followed by a write lets a request that read the session before a
    * sign-out or rotation deleted it bring it back. Changes no other field.
+   *
+   * Best-effort: a rejection is logged and published as
+   * `session-touch-failed`, but the request goes on with the session as
+   * read. A missed touch only means the session goes idle at its previous
+   * deadline, unless a later request records activity.
    */
   touchSession(id: string, lastActiveAt: Date): Promise<void>;
   /**

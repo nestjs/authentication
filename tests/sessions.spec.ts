@@ -3,7 +3,7 @@
  * writes a request costs, cookies; and `SignInService` in an HTTP exchange it reads the cookie from
  * and writes `Set-Cookie` to, or outside one.
  */
-import { ForbiddenException } from '@nestjs/common';
+import { ForbiddenException, Logger } from '@nestjs/common';
 import { HttpAdapterHost } from '@nestjs/core';
 import { ExecutionContextHost } from '@nestjs/core/internal';
 import {
@@ -52,6 +52,34 @@ describe('SessionService', () => {
     await sessions.validate(token);
     await sessions.validate(token);
     expect(touch.mock.calls).toEqual([[session.id, new Date(T0 + 10_000)]]);
+  });
+
+  it('returns the session as read when touchSession() fails, reporting it, and records activity on the next request', async () => {
+    const { sessions, store, seen, tick } = sessionsWith();
+    const { token, session } = await sessions.create('u1');
+    const failure = new Error('lock wait timeout exceeded');
+    const touch = vi.spyOn(store, 'touchSession').mockRejectedValueOnce(failure);
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+    try {
+      tick(10_000);
+      const validated = await sessions.validate(token);
+      expect(validated).toMatchObject({ id: session.id, userId: 'u1', lastActiveAt: new Date(T0) });
+      expect((await store.getSession(session.id))!.lastActiveAt).toEqual(new Date(T0));
+      expect(seen).toEqual([{ type: 'session-touch-failed', userId: 'u1', sessionId: session.id, error: failure }]);
+      expect(seen[0]).toHaveProperty('error', failure);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain('lock wait timeout exceeded');
+
+      // Not touched, the session ends at its previous idle deadline, unless a later request records activity.
+      tick(1);
+      expect((await sessions.validate(token))!.lastActiveAt).toEqual(new Date(T0 + 10_001));
+      expect(touch).toHaveBeenCalledTimes(2);
+      expect((await store.getSession(session.id))!.lastActiveAt).toEqual(new Date(T0 + 10_001));
+      expect(seen).toHaveLength(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('with idleTtl 0, keeps an idle session until its absolute expiry', async () => {
@@ -265,6 +293,32 @@ describe('SignInService', () => {
     expect(live.result).toBe(true);
     expect(live.cookies).toEqual([expect.stringMatching(/^sid=; Max-Age=0; /)]);
     expect(seen).toEqual([{ type: 'sign-out', userId: 'u1', sessionId: issued.session.id }]);
+  });
+
+  it('signOut() and signOutEverywhere() go ahead when recording the session’s activity fails', async () => {
+    const { signIn, inRequest, cookieHeader, store, seen, tick } = setup();
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(store, 'touchSession').mockRejectedValue(new Error('read-only replica'));
+
+    try {
+      const { result: one } = await inRequest({}, () => signIn.signIn('u1'));
+      const { result: two } = await inRequest({}, () => signIn.signIn('u1'));
+      tick(10_000);
+      seen.length = 0;
+
+      const signedOut = await inRequest(cookieHeader(one.cookie), () => signIn.signOut());
+      expect(signedOut.result).toBe(true);
+      expect(signedOut.cookies).toEqual([expect.stringMatching(/^sid=; Max-Age=0; /)]);
+      await expect(store.getSession(one.session.id)).resolves.toBeUndefined();
+
+      const everywhere = await inRequest(cookieHeader(two.cookie), () => signIn.signOutEverywhere('u1'));
+      expect(everywhere.cookies).toEqual([expect.stringMatching(/^sid=; Max-Age=0; /)]);
+      await expect(store.getSession(two.session.id)).resolves.toBeUndefined();
+
+      expect(seen.map((event) => event.type)).toEqual(['session-touch-failed', 'sign-out', 'session-touch-failed', 'sign-out']);
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('signOut() deletes the session even where it looks idle: another instance may still take it', async () => {

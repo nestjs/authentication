@@ -5,7 +5,8 @@ import { channelFor } from './authentication.channels.js';
 
 /**
  * The audit trail of sign-ins, sign-outs, second-factor changes, password
- * resets, email verifications and refused magic links. Each event is also
+ * resets, email verifications and refused magic links, and the session
+ * activity a store failed to record. Each event is also
  * published on its `node:diagnostics_channel` channel
  * (`nestjs:authentication:<type>`), for tooling that runs outside Nest.
  * Listeners cannot change the outcome: a throwing channel subscriber is

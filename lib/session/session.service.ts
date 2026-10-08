@@ -1,4 +1,4 @@
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { firstHeader } from '../utils/auth-state.util.js';
 import { AUTHENTICATION_MODULE_OPTIONS } from '../authentication.constants.js';
 import { isCrossOriginWrite, normalizeOrigin } from '../utils/cross-origin.util.js';
@@ -26,6 +26,7 @@ type RequestHeaders = Record<string, string | string[] | undefined>;
  */
 @Injectable()
 export class SessionService {
+  private static readonly logger = new Logger('SessionService');
   private readonly options: SessionOptions;
   private readonly absoluteTtl: number;
   private readonly pendingTtl: number;
@@ -88,7 +89,11 @@ export class SessionService {
     });
   }
 
-  /** The live session for a token, sliding its idle timeout. */
+  /**
+   * The live session for a token, sliding its idle timeout. Sliding is
+   * best-effort: when the store fails to record the activity, the session
+   * is still returned, as read (see `SessionStore.touchSession()`).
+   */
   async validate(token: string | undefined): Promise<SessionRecord | null> {
     if (!token || !TOKEN_PATTERN.test(token)) {
       return null;
@@ -111,8 +116,7 @@ export class SessionService {
     }
 
     if (now - record.lastActiveAt.getTime() >= this.touchInterval) {
-      record.lastActiveAt = new Date(now);
-      await this.storage.sessions.touchSession(record.id, record.lastActiveAt);
+      await this.touch(record, new Date(now));
     }
 
     return record;
@@ -215,6 +219,25 @@ export class SessionService {
   /** @internal Deletes a session by id, for sessions whose user is gone. */
   async discard(sessionId: string): Promise<void> {
     await this.storage.sessions.deleteSession(sessionId);
+  }
+
+  /**
+   * Records activity, best-effort: the session was read live, so a failed write (a lock timeout,
+   * a read-only replica) does not fail the request. It is logged and published as
+   * `session-touch-failed`, and the session keeps the idle deadline the store still has.
+   */
+  private async touch(record: SessionRecord, lastActiveAt: Date): Promise<void> {
+    try {
+      await this.storage.sessions.touchSession(record.id, lastActiveAt);
+    } catch (error) {
+      SessionService.logger.warn(
+        `Recording activity on a session of user ${record.userId} failed, so its idle timeout did not move: ` +
+          (error instanceof Error ? error.message : String(error)),
+      );
+      this.events.emit({ type: 'session-touch-failed', userId: record.userId, sessionId: record.id, error });
+      return;
+    }
+    record.lastActiveAt = lastActiveAt;
   }
 
   private isLive(record: SessionRecord, now: number): boolean {
