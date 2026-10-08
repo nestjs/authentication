@@ -7,7 +7,7 @@ import type { CredentialProvider } from '../interfaces/authentication-registry.i
 import { AUTHENTICATION_GUARD_BRAND, AUTHENTICATION_METADATA } from '../authentication.constants.js';
 import type { RouteAuthentication } from '../interfaces/authenticate-options.interface.js';
 import { AuthenticationError } from '../errors/authentication.error.js';
-import { refusal, type Refusal } from '../utils/transport-errors.util.js';
+import { refusal, refusalOf, type Refusal } from '../utils/transport-errors.util.js';
 import type { AuthenticationResult } from '../interfaces/authentication-result.interface.js';
 
 type Provider = CredentialProvider<unknown, unknown>;
@@ -17,6 +17,8 @@ const producedBy = new WeakMap<object, Provider>();
 
 const MFA_REQUIRED: Refusal = { message: 'Second factor required', code: 'mfa_required' };
 const EMAIL_UNVERIFIED: Refusal = { status: 403, message: 'Email address not verified', code: 'email_unverified' };
+/** No provider recognised any credentials. `code` only: this body never had an `error`. */
+const MISSING_CREDENTIALS: Refusal = { code: 'missing_credentials', codeOnly: true };
 
 /**
  * Runs the registered providers in order and records the first result on
@@ -24,14 +26,16 @@ const EMAIL_UNVERIFIED: Refusal = { status: 403, message: 'Email address not ver
  *
  * | Route | No credentials | Valid | Invalid |
  * | --- | --- | --- | --- |
- * | default | 401 | pass | 401 |
+ * | default | 401 `missing_credentials` | pass | 401 |
  * | `@Authenticate({ optional: true })` | pass, user `null` | pass | 401 |
  * | `@Public()` | providers not called | not called | not called |
  *
  * A result with `mfa: 'pending'` (second factor outstanding) does not count
  * as signed in: 401 `mfa_required` where a user is required, anonymous on
  * optional routes. `@Authenticate({ mfa: true })` needs `mfa: 'verified'`,
- * and `@Authenticate({ verifiedEmail: true })` a verified address (403).
+ * and `@Authenticate({ verifiedEmail: true })` a verified address (403
+ * `email_unverified`). The code is the body's `code`; a provider's
+ * `AuthenticationError` is answered with its own `code` and `details`.
  *
  * Providers run once per call: the raw result is cached on the request, the
  * GraphQL operation's context, or per ws message. With
@@ -100,7 +104,7 @@ export class AuthenticationGuard implements CanActivate {
       if (pending) {
         return this.fail(context, MFA_REQUIRED);
       }
-      return this.fail(context, {}, this.challenges(context, providers));
+      return this.fail(context, MISSING_CREDENTIALS, this.challenges(context, providers));
     }
 
     if (route.mfa && result.mfa !== 'verified') {
@@ -144,8 +148,7 @@ export class AuthenticationGuard implements CanActivate {
           if (everyProvider || error.status === 401) {
             this.forgetConnection(context);
           }
-          const { status, message, code } = error;
-          return this.fail(context, { status, message, code, cause: error }, error.challenge);
+          return this.fail(context, refusalOf(error), error.challenge);
         }
         throw error; // a store outage is a 500, not a 401
       }

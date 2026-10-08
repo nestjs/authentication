@@ -87,6 +87,7 @@ describe('@Can() on ws messages, with @nestjs/authentication', () => {
     return { send, next, ask: (event: string, data?: unknown) => (send(event, data), next()) };
   };
   const unauthorized = { event: 'exception', data: { status: 'error', message: 'Unauthorized', statusCode: 401 } };
+  const unauthenticated = { event: 'exception', data: { ...unauthorized.data, code: 'missing_credentials' } };
   const draft = { event: 'draft', data: 'Q3 plan' };
 
   beforeAll(async () => {
@@ -113,7 +114,7 @@ describe('@Can() on ws messages, with @nestjs/authentication', () => {
     ]);
 
     // A protected message is refused by authentication, before any policy runs.
-    expect(await socket.ask('read')).toEqual(unauthorized);
+    expect(await socket.ask('read')).toEqual(unauthenticated);
     expect(denials).toHaveLength(1);
   });
 

@@ -162,7 +162,7 @@ describe.each(adapters.map((a) => a.name))('WebSocket gateway on platform-ws (%s
     const client = await connect('/ws');
     expect(await client.request('whoami')).toEqual({
       event: 'exception',
-      data: { status: 'error', statusCode: 401, message: 'Unauthorized' },
+      data: { status: 'error', statusCode: 401, message: 'Unauthorized', code: 'missing_credentials' },
     });
 
     expect(await client.request('ping')).toEqual({ event: 'pong', data: { context: null } });

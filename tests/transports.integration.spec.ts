@@ -204,22 +204,22 @@ describe.each(adapters.map((a) => a.name))('one hybrid app: HTTP, WebSockets and
     const unverified = await signIn('ada');
     expect(await ask(wsUrl, { cookie: unverified }, 'orders')).toEqual({
       event: 'exception',
-      data: { status: 'error', statusCode: 403, error: 'email_unverified', message: 'Email address not verified' },
+      data: { status: 'error', statusCode: 403, error: 'email_unverified', code: 'email_unverified', message: 'Email address not verified' },
     });
     expect(await ask(wsUrl, { cookie: await signIn('verified-grace') }, 'orders')).toEqual({ event: 'orders', data: 'verified-grace' });
 
     expect(await send('orders', { service: 'billing' })).toEqual({
-      error: { statusCode: 403, error: 'email_unverified', message: 'Email address not verified' },
+      error: { statusCode: 403, error: 'email_unverified', code: 'email_unverified', message: 'Email address not verified' },
     });
     expect(await send('orders', { service: 'verified-billing' })).toEqual({ reply: { orders: [], for: 'verified-billing' } });
-    expect(await send('orders', {})).toEqual({ error: { statusCode: 401, message: 'Unauthorized' } });
+    expect(await send('orders', {})).toEqual({ error: { statusCode: 401, message: 'Unauthorized', code: 'missing_credentials' } });
   });
 
   it('asks a WebSocket handshake with a pending session, and a step-up handler, for the second factor', async () => {
     const userId = `mfa-${adapter}`;
     const { secret } = (await http().post('/test/enroll').send({ userId }).expect(201)).body;
     const pending = await signIn(userId);
-    const mfaRequired = { event: 'exception', data: { status: 'error', statusCode: 401, error: 'mfa_required', message: 'Second factor required' } };
+    const mfaRequired = { event: 'exception', data: { status: 'error', statusCode: 401, error: 'mfa_required', code: 'mfa_required', message: 'Second factor required' } };
 
     expect(await ask(wsUrl, { cookie: pending }, 'whoami')).toEqual(mfaRequired);
     expect(await ask(wsUrl, { cookie: await signIn('password-only') }, 'admin')).toEqual(mfaRequired);
@@ -233,7 +233,7 @@ describe.each(adapters.map((a) => a.name))('one hybrid app: HTTP, WebSockets and
     expect(await ask(wsUrl, { 'x-service': 'billing' }, 'whoami')).toEqual({ event: 'whoami', data: 'billing' });
     expect(await ask(wsUrl, { 'x-service': 'billing' }, 'browser-only')).toEqual({
       event: 'exception',
-      data: { status: 'error', statusCode: 401, message: 'Unauthorized' },
+      data: { status: 'error', statusCode: 401, message: 'Unauthorized', code: 'missing_credentials' },
     });
     expect(await ask(wsUrl, { cookie: await signIn('ada') }, 'browser-only')).toEqual({ event: 'browser-only', data: 'ada' });
   });

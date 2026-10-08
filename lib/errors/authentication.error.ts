@@ -11,7 +11,7 @@ import type { AuthenticationErrorOptions } from '../interfaces/authentication-er
  *   `TokenService.refresh()`), the module's interceptor turns it into the
  *   transport's error for its `status`: an HTTP 401 (409 for
  *   `MfaAlreadyEnrolledError`), GraphQL `UNAUTHENTICATED`, a `WsException`
- *   or an `RpcException`.
+ *   or an `RpcException`. Its `code` and `details` are sent in the body.
  * - Elsewhere (a queue worker), it is a plain `Error`.
  */
 export class AuthenticationError extends Error {
@@ -24,8 +24,9 @@ export class AuthenticationError extends Error {
   readonly status: 401 | 403 | 409 = 401;
   readonly challenge?: string;
   readonly code?: string;
+  readonly details?: Record<string, unknown>;
 
-  constructor(message = 'Unauthorized', { challenge, code, cause }: AuthenticationErrorOptions = {}) {
+  constructor(message = 'Unauthorized', { challenge, code, details, cause }: AuthenticationErrorOptions = {}) {
     super(message, cause === undefined ? undefined : { cause });
     this.name = new.target.name;
 
@@ -34,6 +35,9 @@ export class AuthenticationError extends Error {
     }
     if (code !== undefined) {
       this.code = code;
+    }
+    if (details !== undefined) {
+      this.details = details;
     }
   }
 }

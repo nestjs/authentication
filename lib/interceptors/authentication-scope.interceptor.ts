@@ -3,7 +3,7 @@ import { HttpAdapterHost } from '@nestjs/core';
 import { catchError, from, mergeMap, Observable, throwError } from 'rxjs';
 import { getAuthState } from '../utils/auth-state.util.js';
 import { AuthenticationError } from '../errors/authentication.error.js';
-import { refusal } from '../utils/transport-errors.util.js';
+import { refusal, refusalOf } from '../utils/transport-errors.util.js';
 import { AuthenticationScope, runCall, type Scope } from '../context/authentication-scope.service.js';
 
 /**
@@ -34,11 +34,7 @@ export class AuthenticationScopeInterceptor implements NestInterceptor {
           return throwError(() => error);
         }
 
-        const mapped = refusal(
-          context,
-          { status: error.status, message: error.message, code: error.code, cause: error },
-          { challenge: error.challenge, adapterHost: this.adapterHost },
-        );
+        const mapped = refusal(context, refusalOf(error), { challenge: error.challenge, adapterHost: this.adapterHost });
         return from(mapped).pipe(mergeMap((exception) => throwError(() => exception)));
       }),
     );

@@ -169,6 +169,7 @@ describe.each(adapters.map((a) => a.name))('magic links (%s)', (adapter) => {
       expect(elsewhere.body).toEqual({
         message: 'Open the link in the browser you requested it from, or request a new one here',
         error: 'not_this_browser',
+        code: 'not_this_browser',
         statusCode: 401,
       });
       await http().post('/auth/magic/consume').set('Cookie', tx).send({ token }).expect(200);

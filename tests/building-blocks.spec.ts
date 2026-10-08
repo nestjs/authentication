@@ -1313,7 +1313,7 @@ describe('AuthenticationGuard, outside HTTP', () => {
 
     const error = await guard.canActivate(call(Handler, 'handle', {})).catch((e) => e);
     expect(error).toBeInstanceOf(RpcException);
-    expect(error.getError()).toEqual({ statusCode: 401, message: 'Unauthorized' });
+    expect(error.getError()).toEqual({ statusCode: 401, message: 'Unauthorized', code: 'missing_credentials' });
 
     const rpcContext: { user?: unknown } = {};
     await expect(guard.canActivate(call(Handler, 'handle', { token: 't' }, rpcContext))).resolves.toBe(true);
@@ -1337,7 +1337,7 @@ describe('AuthenticationGuard, outside HTTP', () => {
     // optional (class) + mfa (method): anonymous passes, a user without MFA does not.
     await expect(guard.canActivate(call(Optional, 'stepUp', {}))).resolves.toBe(true);
     await expect(guard.canActivate(call(Optional, 'stepUp', { token: 't' }))).rejects.toMatchObject({
-      error: { statusCode: 401, error: 'mfa_required', message: 'Second factor required' },
+      error: { statusCode: 401, error: 'mfa_required', code: 'mfa_required', message: 'Second factor required' },
     });
     await expect(guard.canActivate(call(Optional, 'stepUp', { token: 'mfa' }))).resolves.toBe(true);
     await expect(guard.canActivate(call(Optional, 'plain', { token: 't' }))).resolves.toBe(true);
@@ -1416,7 +1416,7 @@ describe('AuthenticationError thrown under a handler', () => {
     }
   });
 
-  it('a 409 becomes each transport’s conflict, and `code` becomes the body’s `error`', async () => {
+  it('a 409 becomes each transport’s conflict, and `code` becomes the body’s `code` (and `error`)', async () => {
     const scope = new AuthenticationScope();
     const interceptor = new AuthenticationScopeInterceptor(scope, new HttpAdapterHost());
     class Handler {
@@ -1437,7 +1437,83 @@ describe('AuthenticationError thrown under a handler', () => {
     expect(ws.getError()).toEqual({ status: 'error', statusCode: 409, message: 'Authenticator already enrolled' });
 
     const coded = await run('http', new AuthenticationError('Second factor required', { code: 'mfa_required' }));
-    expect(coded.getResponse()).toEqual({ message: 'Second factor required', error: 'mfa_required', statusCode: 401 });
+    expect(coded.getResponse()).toEqual({ message: 'Second factor required', error: 'mfa_required', code: 'mfa_required', statusCode: 401 });
+  });
+
+  describe('`code` and `details` in the body, on every transport', () => {
+    const run = async (type: string, error: Error): Promise<any> => {
+      const interceptor = new AuthenticationScopeInterceptor(new AuthenticationScope(), new HttpAdapterHost());
+      class Handler {
+        handle() {}
+      }
+      const ctx = new ExecutionContextHost([{}, {}], Handler, Handler.prototype.handle);
+      ctx.setType(type as never);
+      return lastValueFrom(interceptor.intercept(ctx, { handle: () => throwError(() => error) })).catch((e: unknown) => e);
+    };
+    const body = (exception: any) => ('getResponse' in exception ? exception.getResponse() : exception.getError());
+    const throttled = () =>
+      new AuthenticationError('Too many attempts', {
+        code: 'too_many_attempts',
+        details: { retryAfter: 30 },
+        challenge: 'Bearer realm="app"',
+        cause: new Error('internal: limiter key ip:10.0.0.1'),
+      });
+
+    it('HTTP and GraphQL: Nest’s body for the code, key for key, then `code` and `details`', async () => {
+      // What `error` carried before `code` had its own key, unchanged.
+      const before = new UnauthorizedException('Too many attempts', 'too_many_attempts').getResponse();
+      for (const type of ['http', 'graphql']) {
+        const error = await run(type, throttled());
+        expect(error).toBeInstanceOf(UnauthorizedException);
+        expect(JSON.stringify(error.getResponse())).toBe(JSON.stringify({ ...(before as object), code: 'too_many_attempts', details: { retryAfter: 30 } }));
+        expect(error.message).toBe('Too many attempts');
+        expect(error.cause).toBeInstanceOf(AuthenticationError);
+      }
+    });
+
+    it('ws and rpc: the same keys in their payloads', async () => {
+      const fields = { statusCode: 401, error: 'too_many_attempts', message: 'Too many attempts', code: 'too_many_attempts', details: { retryAfter: 30 } };
+      expect((await run('ws', throttled())).getError()).toEqual({ status: 'error', ...fields });
+      expect((await run('rpc', throttled())).getError()).toEqual(fields);
+    });
+
+    it('sends `details` without a code, and no `code` key where there is none', async () => {
+      const error = () => new AuthenticationError('Slow down', { details: { retryAfter: 5 } });
+      expect((await run('http', error())).getResponse()).toEqual({ message: 'Slow down', error: 'Unauthorized', statusCode: 401, details: { retryAfter: 5 } });
+      expect((await run('ws', error())).getError()).toEqual({ status: 'error', statusCode: 401, message: 'Slow down', details: { retryAfter: 5 } });
+      expect((await run('rpc', error())).getError()).toEqual({ statusCode: 401, message: 'Slow down', details: { retryAfter: 5 } });
+    });
+
+    it('leaves code-less refusals as they were: `Unauthorized` or `Conflict` in `error` over HTTP, none elsewhere', async () => {
+      for (const type of ['http', 'graphql']) {
+        expect((await run(type, new RefreshTokenError('reused'))).getResponse()).toEqual({
+          message: 'Refresh token reused',
+          error: 'Unauthorized',
+          statusCode: 401,
+        });
+        expect((await run(type, new MfaAlreadyEnrolledError('u1'))).getResponse()).toEqual({
+          message: 'Authenticator already enrolled',
+          error: 'Conflict',
+          statusCode: 409,
+        });
+        expect((await run(type, new AuthenticationError())).getResponse()).toEqual({ message: 'Unauthorized', statusCode: 401 });
+      }
+      for (const type of ['ws', 'rpc']) {
+        for (const error of [new RefreshTokenError('reused'), new MfaAlreadyEnrolledError('u1'), new AuthenticationError()]) {
+          const payload = body(await run(type, error));
+          expect(payload).not.toHaveProperty('code');
+          expect(payload).not.toHaveProperty('error');
+          expect(payload).not.toHaveProperty('details');
+        }
+      }
+    });
+
+    it('never puts the cause, the challenge or other properties of the error in the body', async () => {
+      for (const type of ['http', 'graphql', 'ws', 'rpc']) {
+        const payload = JSON.stringify(body(await run(type, throttled())));
+        expect(payload).not.toMatch(/internal|limiter|realm|cause|challenge|stack/);
+      }
+    });
   });
 
   it('other errors pass through untouched', async () => {

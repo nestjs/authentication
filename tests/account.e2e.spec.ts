@@ -392,7 +392,7 @@ describe.each(adapters.map((a) => a.name))('password reset and email verificatio
       const cookie = await signIn(ada.email);
 
       const refused = await http().get('/orders').set('Cookie', cookie).expect(403);
-      expect(refused.body).toEqual({ message: 'Email address not verified', error: 'email_unverified', statusCode: 403 });
+      expect(refused.body).toEqual({ message: 'Email address not verified', error: 'email_unverified', code: 'email_unverified', statusCode: 403 });
       await http().get('/catalog').expect(200, { user: null }); // anonymous callers of an optional route pass
       await http().get('/catalog').set('Cookie', cookie).expect(403);
 

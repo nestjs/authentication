@@ -28,7 +28,10 @@ import { LOCK_REGISTRY } from '../lib/services/authentication-registry.service.j
 type User = { id: string; emailVerified?: boolean };
 type Request = { headers: Record<string, string>; user?: unknown; session?: unknown };
 
-/** Answers what `x-<name>` says: `ok` a user, `pending` a pending sign-in, `bad` an AuthenticationError, `boom` an outage. */
+/**
+ * Answers what `x-<name>` says: `ok` a user, `pending` a pending sign-in, `bad` an AuthenticationError,
+ * `expired` one with a code and details, `boom` an outage.
+ */
 class HeaderProvider extends AuthenticationProvider<User> {
   calls = 0;
   constructor(
@@ -50,6 +53,13 @@ class HeaderProvider extends AuthenticationProvider<User> {
         return { user: null as never };
       case 'bad':
         throw new AuthenticationError(`bad ${this.name}`, { challenge: `${this.name} error="invalid"` });
+      case 'expired':
+        throw new AuthenticationError('Session expired', {
+          code: 'invalid_session',
+          details: { expiredAt: '2026-01-01T00:00:00.000Z' },
+          challenge: `${this.name} error="invalid"`,
+          cause: new Error('internal: row 42 has expires_at in the past'),
+        });
       case 'boom':
         throw new Error('store down');
       default:
@@ -216,7 +226,8 @@ describe('AuthenticationGuard over HTTP', () => {
 
     const error = await refusal(guard.canActivate(context));
     expect(error).toBeInstanceOf(UnauthorizedException);
-    expect(error.getResponse()).toEqual({ message: 'Unauthorized', statusCode: 401 });
+    // `new UnauthorizedException()`'s body, key for key, plus the code: no `error`, which it never had.
+    expect(JSON.stringify(error.getResponse())).toBe('{"message":"Unauthorized","statusCode":401,"code":"missing_credentials"}');
     expect(response).toEqual({ 'WWW-Authenticate': 'First realm="a", Second realm="b"' });
     expect(headers).toHaveLength(1);
   });
@@ -244,6 +255,18 @@ describe('AuthenticationGuard over HTTP', () => {
     expect(second.calls).toBe(0);
   });
 
+  it('answers a provider’s refusal with its code and details, and nothing else of the error', async () => {
+    const { guard } = setup();
+    const { context, response } = http('required', { 'x-first': 'expired' });
+
+    const error = await refusal(guard.canActivate(context));
+    expect(JSON.stringify(error.getResponse())).toBe(
+      '{"message":"Session expired","error":"invalid_session","statusCode":401,"code":"invalid_session","details":{"expiredAt":"2026-01-01T00:00:00.000Z"}}',
+    );
+    expect(error.cause).toMatchObject({ code: 'invalid_session' }); // the cause stays on the exception, for logs
+    expect(response).toEqual({ 'WWW-Authenticate': 'first error="invalid"' });
+  });
+
   it('lets any other error through untouched: an outage is a 500, not a 401', async () => {
     const { guard, second } = setup();
     const { context } = http('optional', { 'x-first': 'boom', 'x-second': 'ok' });
@@ -257,7 +280,7 @@ describe('AuthenticationGuard over HTTP', () => {
 
     const required = http('required', { 'x-first': 'pending', 'x-second': 'ok' });
     const error = await refusal(guard.canActivate(required.context));
-    expect(error.getResponse()).toEqual({ message: 'Second factor required', error: 'mfa_required', statusCode: 401 });
+    expect(error.getResponse()).toEqual({ message: 'Second factor required', error: 'mfa_required', code: 'mfa_required', statusCode: 401 });
     expect(required.response).toEqual({}); // no challenge: the credentials are fine
     expect(second.calls).toBe(0); // the pending result still ends the chain
 
@@ -321,7 +344,7 @@ describe('AuthenticationGuard over HTTP', () => {
     const unverified = http('verified', { 'x-first': 'ok' });
     const error = await refusal(guard.canActivate(unverified.context));
     expect(error).toBeInstanceOf(ForbiddenException);
-    expect(error.getResponse()).toEqual({ message: 'Email address not verified', error: 'email_unverified', statusCode: 403 });
+    expect(error.getResponse()).toEqual({ message: 'Email address not verified', error: 'email_unverified', code: 'email_unverified', statusCode: 403 });
     expect(unverified.request).not.toHaveProperty('user');
     expect(unverified.response).toEqual({}); // a 403 carries no challenge
 

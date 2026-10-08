@@ -211,6 +211,7 @@ describe('WebSockets (platform-ws) with @nestjs/authentication', () => {
     return reply;
   };
   const exception = (message: string, statusCode: number) => ({ event: 'exception', data: { status: 'error', message, statusCode } });
+  const unauthenticated = { event: 'exception', data: { status: 'error', message: 'Unauthorized', statusCode: 401, code: 'missing_credentials' } };
 
   beforeAll(async () => {
     app = await createApp('express', WsAppModule, { ...withCheapHasher, setup: (a) => void a.useWebSocketAdapter(new WsAdapter(a)) });
@@ -234,7 +235,7 @@ describe('WebSockets (platform-ws) with @nestjs/authentication', () => {
   });
 
   it('answers a guest from authentication on required messages, and from the policy on optional ones', async () => {
-    expect(await ask(null, 'create', { name: 'Anon' })).toEqual(exception('Unauthorized', 401));
+    expect(await ask(null, 'create', { name: 'Anon' })).toEqual(unauthenticated);
     expect(events).toEqual([]);
 
     expect(await ask(null, 'delete')).toEqual(exception('Unauthorized', 401));
@@ -324,7 +325,9 @@ describe('TCP microservice with @nestjs/authentication', () => {
   });
 
   it('answers a guest from authentication on required handlers, and from @Can() on optional ones', async () => {
-    expect(await send('orders.refund', { id: alicePaid.id })).toEqual({ error: { message: 'Unauthorized', statusCode: 401 } });
+    expect(await send('orders.refund', { id: alicePaid.id })).toEqual({
+      error: { message: 'Unauthorized', statusCode: 401, code: 'missing_credentials' },
+    });
     expect(await send('products.delete', {})).toEqual({ error: { message: 'Unauthorized', statusCode: 401 } });
     expect(await send('products.delete', { token: 'sam-token' })).toEqual({ error: { message: 'Forbidden', statusCode: 403 } });
   });

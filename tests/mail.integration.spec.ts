@@ -310,7 +310,7 @@ describe.each(adapters.map((a) => a.name))('links by email through @nestjs/mail 
     expect(mail).toMatchObject({ subject: 'Confirm your email address', from: { address: 'accounts@example.com' } });
 
     const refused = await http().get('/orders').set('Cookie', cookie).expect(403);
-    expect(refused.body).toEqual({ message: 'Email address not verified', error: 'email_unverified', statusCode: 403 });
+    expect(refused.body).toEqual({ message: 'Email address not verified', error: 'email_unverified', code: 'email_unverified', statusCode: 403 });
 
     await verifyEmail(email);
     await http().get('/orders').set('Cookie', cookie).expect(200, { orders: [], email });
