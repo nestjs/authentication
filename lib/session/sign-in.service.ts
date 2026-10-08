@@ -22,8 +22,9 @@ import { SessionService } from './session.service.js';
  *   (login CSRF: signing the victim's browser in to the attacker's
  *   account), by the same rule as `app.enableCsrfProtection()`;
  * - the browser's previous session is deleted (session fixation defence);
- * - users with a confirmed authenticator get an `mfa: 'pending'` session,
- *   which is not signed in anywhere until `completeMfa()` verifies a code.
+ * - with `mfa` configured, users with a confirmed authenticator get an
+ *   `mfa: 'pending'` session, which is not signed in anywhere until
+ *   `completeMfa()` verifies a code.
  */
 @Injectable()
 export class SignInService {
@@ -170,9 +171,9 @@ export class SignInService {
   }
 
   /**
-   * Ends every session and refresh-token family of the user, and clears
-   * this browser's cookie if it was one of them. API keys live in your own
-   * table: revoke those yourself.
+   * Ends every session and, with `accessToken` configured, every
+   * refresh-token family of the user, and clears this browser's cookie if it
+   * was one of them. API keys live in your own table: revoke those yourself.
    */
   async signOutEverywhere(userId: string): Promise<void> {
     const exchange = this.scope.exchange();

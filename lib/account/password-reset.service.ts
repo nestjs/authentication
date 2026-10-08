@@ -167,7 +167,7 @@ export class PasswordResetService implements OnModuleDestroy {
     await handler.send({ userId: account.id, email: account.email, url: url.toString(), expiresAt });
   }
 
-  /** Ends every session and refresh-token family of the user. */
+  /** Ends every session and refresh-token family (with `accessToken`) of the user. */
   private async revokeSignIns(userId: string) {
     await this.sessions.revokeAll(userId);
     await this.tokens.revokeAll(userId);

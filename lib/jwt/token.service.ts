@@ -20,7 +20,7 @@ import { JwtSigner } from './jwt-signer.service.js';
  * short-lived JWT access token, and an opaque refresh token that renews it.
  *
  * - `issue()` is to token clients what `SignInService.signIn()` is to
- *   browsers: a user with a confirmed authenticator gets no tokens without
+ *   browsers: with `mfa` configured, a user with a confirmed authenticator gets no tokens without
  *   a second factor.
  * - Access tokens are signed with the module's `accessToken` options, the
  *   same ones `JwtBearerProvider` verifies with by default.
@@ -71,7 +71,7 @@ export class TokenService {
   /**
    * At sign-in: signs an access token and starts a refresh-token family.
    *
-   * A user with a confirmed authenticator must send a second factor
+   * With `mfa` configured, a user with a confirmed authenticator must send a second factor
    * (`secondFactor`). Without one, `issue()` throws an
    * `AuthenticationError` whose body says `mfa_required`, and counts
    * nothing against the user's lockout; with a wrong one, `Invalid code`.
@@ -147,9 +147,10 @@ export class TokenService {
    * Signs out the client holding `refreshToken` (one device): revokes its
    * family. Spent tokens of the family work too. Resolves `false` for
    * unknown or malformed tokens, which a route should not reveal (RFC 7009
-   * §2.2).
+   * §2.2). Throws without `accessToken`, as `refresh()` does.
    */
   async revoke(refreshToken: string): Promise<boolean> {
+    this.requireSigner();
     if (typeof refreshToken !== 'string' || !TOKEN_PATTERN.test(refreshToken)) {
       return false;
     }
@@ -165,9 +166,19 @@ export class TokenService {
     return true;
   }
 
-  /** Signs the user out of every token client. Issued access tokens live until they expire. */
-  revokeAll(userId: string): Promise<void> {
-    return this.storage.refreshTokens.revokeUserRefreshTokens(userId);
+  /**
+   * Signs the user out of every token client. Issued access tokens live
+   * until they expire. Without `accessToken`, this app issues no refresh
+   * tokens, and there is nothing to revoke: the store is not read. Apps that
+   * share a user database configure `accessToken` in all of them if any of
+   * them issues tokens: otherwise this one's sign-outs everywhere leave the
+   * token clients of the others signed in.
+   */
+  async revokeAll(userId: string): Promise<void> {
+    if (!this.signer) {
+      return;
+    }
+    await this.storage.refreshTokens.revokeUserRefreshTokens(userId);
   }
 
   /** `true` when a second factor was required and verified; throws when one is required and missing or wrong. */

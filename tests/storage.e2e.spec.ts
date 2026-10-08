@@ -217,8 +217,8 @@ describe('AuthenticationStorage in an app', () => {
     await expect(moduleRef.get(RedisSessionStore).getSession(session.id)).resolves.toMatchObject({ userId: 'u1' });
     expect(moduleRef.get(AuthenticationStorage).sessions).toBe(moduleRef.get(RedisSessionStore));
 
-    // A session cookie also signs in (`mfa`) and signs out everywhere (`refreshTokens`): both in memory here.
-    expect(logged()).toEqual(['AuthenticationStorage: RedisSessionStore (sessions); in-memory (refreshTokens, mfa)']);
+    // Without `mfa` and `accessToken`, a session cookie reads no authenticators and revokes no refresh tokens.
+    expect(logged()).toEqual(['AuthenticationStorage: RedisSessionStore (sessions)']);
   });
 
   it('splits the contracts between providers, each used for its own; the rest stay in memory', async () => {
@@ -325,7 +325,7 @@ describe('AuthenticationStorage in an app', () => {
 
     const { session } = await moduleRef.get(SessionService).create('u1');
     await expect(fake.getSession(session.id)).resolves.toMatchObject({ userId: 'u1' });
-    expect(logged()).toEqual(['AuthenticationStorage: InMemorySessionStore (sessions); in-memory (refreshTokens, mfa)']);
+    expect(logged()).toEqual(['AuthenticationStorage: InMemorySessionStore (sessions)']);
   });
 });
 
@@ -355,9 +355,9 @@ describe('the production guard', () => {
   });
 
   it('checks only the contracts the configured features use', async () => {
-    // A bearer-token API: no session cookie, so no session store. Signing in checks for an authenticator (`mfa`).
+    // A bearer-token API: no session cookie, so no session store; no `mfa`, so no authenticator check.
     await expect(start([AuthenticationModule.forRoot({ accessToken: { key: KEY } })], [Bearer])).rejects.toThrow(
-      'no store is registered for `refreshTokens` (RefreshTokenStore) and `mfa` (MfaStore), and NODE_ENV',
+      'no store is registered for `refreshTokens` (RefreshTokenStore), and NODE_ENV',
     );
 
     @Module({ providers: [SqlAuthenticationStore] })
@@ -365,7 +365,7 @@ describe('the production guard', () => {
     const api = await start([AuthenticationModule.forRoot({ accessToken: { key: KEY } }), SqlModule], [Bearer]);
     await api.close();
 
-    // Magic links sign browsers in: sessions, pending links, and `mfa` (registered here) for the authenticator check.
+    // Magic links sign browsers in: sessions and pending links.
     await expect(
       start([AuthenticationModule.forRoot({ magicLink: { url: 'https://example.com/magic' } }), SqlModule], [MagicLinks]),
     ).rejects.toThrow('no store is registered for `sessions` (SessionStore) and `magicLinks` (MagicLinkStore), and NODE_ENV');
@@ -398,7 +398,7 @@ describe('the production guard', () => {
     for (const spelling of ['Production', 'PRODUCTION', 'production ', ' production\n']) {
       process.env.NODE_ENV = spelling;
       await expect(start([AuthenticationModule.forRoot({ accessToken: { key: KEY } })], [Bearer])).rejects.toThrow(
-        'no store is registered for `refreshTokens` (RefreshTokenStore) and `mfa` (MfaStore)',
+        'no store is registered for `refreshTokens` (RefreshTokenStore), and NODE_ENV',
       );
     }
   });

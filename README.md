@@ -91,7 +91,7 @@ export class AppController {
 }
 ```
 
-The in-memory stores are fine in development. In production, startup fails until you register real stores with `AuthenticationStorage.registerSource()` for everything your features use (`accessToken` alone uses the `refreshTokens` and `mfa` stores), or you set `allowInMemoryStorage: true`. Read [Overview & Tutorial](https://docs.nestjs.com/security/authentication) for sessions, refresh tokens, TOTP, magic links, OIDC and account flows.
+The in-memory stores are fine in development. In production, startup fails until you register real stores with `AuthenticationStorage.registerSource()` for everything your features use (a `SessionCookieProvider` uses the `sessions` store, `accessToken` the `refreshTokens` store, and `mfa`, off unless configured, the `mfa` store), or you set `allowInMemoryStorage: true`. Read [Overview & Tutorial](https://docs.nestjs.com/security/authentication) for sessions, refresh tokens, TOTP, magic links, OIDC and account flows.
 
 ## Support
 

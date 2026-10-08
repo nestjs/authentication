@@ -3,7 +3,8 @@
  * follows from it: at startup, every contract a configured feature uses must have a
  * registered store; at run time, a read of any other contract without one fails instead
  * of running on the in-memory default. The family example's finding 8 is the case this
- * file was written for.
+ * file was written for; since #20, MFA and refresh tokens are off unless configured, so
+ * the apps sharing a user database have to configure them alike.
  */
 import { Injectable, Logger, Module, type INestApplicationContext, type Provider } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
@@ -188,27 +189,43 @@ describe('the production guard and what the features read', () => {
   });
 
   /**
-   * The family example's finding 8. Alice enrolled an authenticator through another
-   * instance (one configured with `mfa`), so the shared database has her confirmed
-   * authenticator. This instance has no `mfa` option, and its store registers only what
-   * the guard used to ask of this configuration: refresh tokens and email tokens. Then
-   * she signs in with her password alone. Either answer is safe: startup fails naming
-   * `mfa`, or the sign-in asks for the second factor.
+   * The family example's finding 8, under the rule of #20: MFA is off unless `mfa` is
+   * configured. Alice enrolled an authenticator through another instance (one configured
+   * with `mfa`), so the shared database has her confirmed authenticator. This instance has
+   * no `mfa` option: it neither asks for an `MfaStore` nor reads one, and signs her in with
+   * her password alone. Apps sharing a user database must configure `mfa` alike.
    */
-  it('never signs in, with a password alone, a user who enrolled an authenticator through another instance', async () => {
+  it('without `mfa`, signs in with a password alone a user who enrolled an authenticator through another instance', async () => {
+    const world = new World();
+    await world.mfa.saveTotp('alice', { secret: 'sealed-by-another-instance', confirmed: true });
+    world.touched.clear();
+
+    moduleRef = await start(FAMILY(), storesFor(world, ['sessions', 'refreshTokens', 'emailTokens']));
+    await expect(moduleRef.get(TokenService).issue('alice', { method: 'password' })).resolves.toMatchObject({ expiresIn: 900 });
+    expect(world.touched.has('mfa')).toBe(false);
+  });
+
+  it('without `mfa`, a session cookie app gives such a user a session with no pending second factor', async () => {
+    const world = new World();
+    await world.mfa.saveTotp('alice', { secret: 'sealed-by-another-instance', confirmed: true });
+    world.touched.clear();
+
+    moduleRef = await start({ providers: [new Sessions()] }, storesFor(world, ['sessions']));
+    const { session } = await moduleRef.get(SignInService).signIn('alice');
+    expect(session.mfa).toBeUndefined();
+    expect([...world.touched]).toEqual(['sessions']);
+  });
+
+  it('with `mfa`, every sign-in sees an authenticator enrolled through another instance', async () => {
     const world = new World();
     await world.mfa.saveTotp('alice', { secret: 'sealed-by-another-instance', confirmed: true });
 
-    let outcome: string;
-    try {
-      moduleRef = await start(FAMILY(), storesFor(world, ['refreshTokens', 'emailTokens']));
-      await moduleRef.get(TokenService).issue('alice', { method: 'password' });
-      outcome = 'signed in';
-    } catch (error) {
-      outcome = error instanceof AuthenticationError ? `${error.status} ${error.code}` : (error as Error).message;
-    }
-
-    expect(outcome).toMatch(/^401 mfa_required$|`mfa` \(MfaStore\)/);
+    moduleRef = await start(
+      { providers: [new Sessions(), new Bearer()], options: { accessToken: { key: KEY }, mfa: { encryption: false } } },
+      storesFor(world, ['sessions', 'refreshTokens', 'mfa']),
+    );
+    expect((await moduleRef.get(SignInService).signIn('alice')).session.mfa).toBe('pending');
+    await expect(moduleRef.get(TokenService).issue('alice')).rejects.toMatchObject({ code: 'mfa_required' });
   });
 
   describe('the contracts each feature uses', () => {
@@ -252,9 +269,6 @@ describe('the production guard and what the features read', () => {
     beforeAll(() => idp.start());
     afterAll(() => idp.stop());
 
-    /** Enrolled through another instance: every sign-in must see it. */
-    const enrolled = (world: World) => world.mfa.saveTotp('enrolled', { secret: 'sealed-elsewhere', confirmed: true });
-
     /**
      * Per feature: its configuration alone, the contracts the production guard asks for
      * (written out here, not read from the mapping), and every flow of the feature.
@@ -268,36 +282,33 @@ describe('the production guard and what the features read', () => {
       {
         feature: 'sessionCookie',
         options: () => ({ providers: [new Sessions()] }),
-        contracts: ['sessions', 'refreshTokens', 'mfa'],
-        flows: async (app, world) => {
+        contracts: ['sessions'],
+        flows: async (app) => {
           const signIn = app.get(SignInService);
           const sessions = app.get(SessionService);
 
           const { token, session } = await signIn.signIn('u1');
+          expect(session.mfa).toBeUndefined();
           expect(await sessions.validate(token)).toMatchObject({ userId: 'u1' });
           expect(await sessions.list('u1')).toHaveLength(1);
 
           const rotated = (await sessions.rotate(session))!;
           expect(await sessions.revoke(rotated.session.id, { userId: 'u1' })).toBe(true);
+          const again = await signIn.signIn('u1');
           await signIn.signOutEverywhere('u1');
-
-          await enrolled(world);
-          expect((await signIn.signIn('enrolled')).session.mfa).toBe('pending');
+          expect(await sessions.validate(again.token)).toBeNull();
         },
       },
       {
         feature: 'accessToken',
         options: () => ({ providers: [new Bearer()], options: { accessToken: { key: KEY } } }),
-        contracts: ['refreshTokens', 'mfa'],
-        flows: async (app, world) => {
+        contracts: ['refreshTokens'],
+        flows: async (app) => {
           const tokens = app.get(TokenService);
           const pair = await tokens.issue('u1');
           const next = await tokens.refresh(pair.refreshToken);
           expect(await tokens.revoke(next.refreshToken)).toBe(true);
           await tokens.revokeAll('u1');
-
-          await enrolled(world);
-          await expect(tokens.issue('enrolled')).rejects.toMatchObject({ code: 'mfa_required' });
         },
       },
       {
@@ -321,20 +332,14 @@ describe('the production guard and what the features read', () => {
       {
         feature: 'magicLink',
         options: () => ({ handlers: { magicLink: new Links() }, options: { magicLink: { url: 'https://example.com/magic' } } }),
-        contracts: ['sessions', 'mfa', 'magicLinks'],
-        flows: async (app, world) => {
+        contracts: ['sessions', 'magicLinks'],
+        flows: async (app) => {
           const links = app.get(MagicLinkService);
           // Outside HTTP: the browser's transaction cookie is passed by hand.
           const browser = (cookie?: string) => ({ request: { headers: { cookie: cookie?.split(';')[0] } } });
 
           const first = await links.create('u1@example.com');
           expect(await links.consume(tokenOf(magicLinks), browser(first.cookie))).toMatchObject({ session: { userId: 'u1' } });
-
-          await enrolled(world);
-          const second = await links.create('enrolled@example.com');
-          expect(await links.consume(tokenOf(magicLinks), browser(second.cookie))).toMatchObject({
-            session: { userId: 'enrolled', mfa: 'pending' },
-          });
         },
       },
       {
@@ -348,7 +353,7 @@ describe('the production guard and what the features read', () => {
             },
           },
         }),
-        contracts: ['sessions', 'mfa', 'oidcStates'],
+        contracts: ['sessions', 'oidcStates'],
         flows: async (app) => {
           const oidc = app.get(OidcService);
           const login = await oidc.start('mock', { request: { method: 'GET', headers: {} } });
@@ -367,19 +372,19 @@ describe('the production guard and what the features read', () => {
           handlers: { passwordReset: new Resets() },
           options: { passwordReset: { url: 'https://example.com/reset' }, password: { logN: 10 } },
         }),
-        contracts: ['sessions', 'refreshTokens', 'mfa', 'emailTokens'],
-        flows: async (app, world) => {
+        contracts: ['sessions', 'emailTokens'],
+        flows: async (app) => {
           const resets = app.get(PasswordResetService);
 
           resets.request('u1@example.com');
           await resets.onModuleDestroy();
           expect(await resets.reset(tokenOf(resetLinks), 'a new password')).toEqual({ userId: 'u1' });
 
-          await enrolled(world);
-          resets.request('enrolled@example.com');
+          resets.request('u2@example.com');
           await resets.onModuleDestroy();
           const result = await resets.reset(tokenOf(resetLinks), 'a new password', { signIn: true });
-          expect(result?.signedIn?.session.mfa).toBe('pending');
+          expect(result?.signedIn?.session).toMatchObject({ userId: 'u2' });
+          expect(result?.signedIn?.session.mfa).toBeUndefined();
         },
       },
       {
@@ -417,10 +422,17 @@ describe('the production guard and what the features read', () => {
       },
     );
 
-    it('the family example: its features use sessions, refresh tokens, MFA and email tokens', async () => {
+    it('the family example: its features use sessions, refresh tokens and email tokens, and no MFA', async () => {
       const failure = start(FAMILY(), storesFor(new World(), ['refreshTokens', 'emailTokens']));
-      expect(named(await failure.catch((error: unknown) => error))).toEqual(['sessions', 'mfa']);
-      moduleRef = await start(FAMILY(), storesFor(new World(), ['sessions', 'refreshTokens', 'mfa', 'emailTokens']));
+      expect(named(await failure.catch((error: unknown) => error))).toEqual(['sessions']);
+      moduleRef = await start(FAMILY(), storesFor(new World(), ['sessions', 'refreshTokens', 'emailTokens']));
+    });
+
+    it('a session cookie with `mfa` or `accessToken` asks for their stores too', async () => {
+      const failure = (options: AuthenticationModuleOptions) =>
+        start({ providers: [new Sessions()], options }, storesFor(new World(), ['sessions'])).catch((error: unknown) => error);
+      expect(named(await failure({ mfa: { encryption: false } }))).toEqual(['mfa']);
+      expect(named(await failure({ accessToken: { key: KEY } }))).toEqual(['refreshTokens']);
     });
 
     it('with nothing configured that keeps state, nothing is asked for', async () => {
@@ -437,7 +449,7 @@ describe('the production guard and what the features read', () => {
 
     it('fails at that read in production, naming the contract, instead of running in memory', async () => {
       const world = new World();
-      moduleRef = await start(API(), storesFor(world, ['refreshTokens', 'mfa']));
+      moduleRef = await start(API(), storesFor(world, ['refreshTokens']));
 
       await expect(moduleRef.get(SessionService).create('u1')).rejects.toThrow(
         'AuthenticationStorage: no store is registered for `sessions` (SessionStore), and NODE_ENV is "production": in ' +
@@ -472,7 +484,7 @@ describe('the production guard and what the features read', () => {
     it('the contract suite keeps its in-memory defaults for the other contracts in production', async () => {
       const cases = authenticationStoreContract(() => new World(), { contracts: ['emailTokens'], concurrent: true });
       const services = cases.find((c) => c.name.includes('(the services)'))!;
-      await services.run(); // password reset reads sessions, refresh tokens and MFA, none of them registered
+      await services.run(); // password reset reads sessions, none registered
     });
   });
 });

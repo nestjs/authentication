@@ -78,7 +78,7 @@ export class MfaService {
     this.lockoutWindow = durationOr(this.options?.lockoutWindow, '15m');
 
     if (!this.options) {
-      return; // MFA unused: isEnrolled() works, enrollment throws
+      return; // MFA off: isEnrolled() answers false, everything else throws, and the store is never read
     }
 
     if (this.options.encryption === undefined) {
@@ -99,7 +99,16 @@ export class MfaService {
     requireIntegerOption(this.options.recoveryCodes, 'mfa.recoveryCodes', { min: 1 });
   }
 
+  /**
+   * Whether the user has a confirmed authenticator. Without the `mfa`
+   * option, MFA is off: `false`, without reading the store, even for a user
+   * who enrolled through another app sharing the user database. Every app
+   * that signs those users in must configure `mfa` if any of them does.
+   */
   async isEnrolled(userId: string): Promise<boolean> {
+    if (!this.options) {
+      return false;
+    }
     // Truthy, not `=== true`: a store that reads the flag back as `1` must not skip the second factor.
     return !!(await this.store.getTotp(userId))?.confirmed;
   }
@@ -249,7 +258,7 @@ export class MfaService {
     return false;
   }
 
-  remainingRecoveryCodes(userId: string): Promise<number> {
+  async remainingRecoveryCodes(userId: string): Promise<number> {
     return this.store.countRecoveryCodes(userId);
   }
 
@@ -319,16 +328,10 @@ export class MfaService {
   }
 
   private seal(userId: string, secret: string): string {
-    if (!this.options) {
-      throw new Error('MFA is not configured: add `mfa: { encryption: … }` to the AuthenticationModule options');
-    }
     return this.cipher ? this.cipher.encrypt(secret, `totp.${userId}`) : secret;
   }
 
   private open(userId: string, stored: string): { plaintext: string; needsReencrypt: boolean } | undefined {
-    if (!this.options) {
-      throw new Error('MFA is not configured: add `mfa: { encryption: … }` to the AuthenticationModule options');
-    }
     if (!this.cipher) {
       return { plaintext: stored, needsReencrypt: false };
     }
@@ -375,8 +378,15 @@ export class MfaService {
     return found;
   }
 
-  /** Read at each call, never in the constructor: the registry locks once the module starts. */
+  /**
+   * Read at each call, never in the constructor: the registry locks once the
+   * module starts. Without the `mfa` option it throws before reading: MFA is
+   * off, and the production guard asks for no `MfaStore`.
+   */
   private get store(): MfaStore {
+    if (!this.options) {
+      throw new Error('MFA is not configured: add `mfa: { encryption: … }` to the AuthenticationModule options');
+    }
     return this.storage.mfa;
   }
 

@@ -998,6 +998,14 @@ describe('TokenService', () => {
     const { service } = setup(null);
     await expect(service.issue('u1')).rejects.toThrow(/configure `accessToken`/);
     await expect(service.refresh('A'.repeat(43))).rejects.toThrow(/configure `accessToken`/);
+    await expect(service.revoke('A'.repeat(43))).rejects.toThrow(/configure `accessToken`/);
+    // No refresh tokens without `accessToken`: a sign-out everywhere has none to revoke, and reads no store.
+    const unread = {
+      get refreshTokens(): never {
+        throw new Error('the refresh-token store was read');
+      },
+    };
+    await expect(new TokenService(unread as never).revokeAll('u1')).resolves.toBeUndefined();
   });
 
   it('checks the signing key when it is created', () => {
@@ -1652,7 +1660,37 @@ describe('TOTP secret encryption at rest', () => {
 
     // Without any MFA config, enrollment refuses rather than storing plaintext.
     await expect(service(store, {}).enroll('u2', 'u2')).rejects.toThrow(/not configured/);
-    await expect(service(store, {}).isEnrolled('u1')).resolves.toBe(true);
+    // And MFA is off: an enrolled user has no second factor to give, and the store is not read.
+    const getTotp = vi.spyOn(store, 'getTotp');
+    await expect(service(store, {}).isEnrolled('u1')).resolves.toBe(false);
+    expect(getTotp).not.toHaveBeenCalled();
+  });
+
+  it('without the `mfa` option, every method but isEnrolled() throws before touching the store', async () => {
+    const store = new InMemoryMfaStore();
+    const touched = vi.fn();
+    const watched = new Proxy(store, {
+      get: (target, key) => {
+        const value = Reflect.get(target, key, target);
+        return typeof value === 'function' ? (...args: unknown[]) => (touched(key), value.apply(target, args)) : value;
+      },
+    });
+    const off = service(watched, {});
+
+    await expect(off.isEnrolled('u1')).resolves.toBe(false);
+    for (const call of [
+      () => off.enroll('u1', 'u1'),
+      () => off.confirm('u1', '000000'),
+      () => off.verifyTotp('u1', '000000'),
+      () => off.verifyRecoveryCode('u1', 'AAAAA-AAAAA'),
+      () => off.generateRecoveryCodes('u1'),
+      () => off.remainingRecoveryCodes('u1'),
+      () => off.disable('u1'),
+      () => off.reencrypt('u1'),
+    ]) {
+      await expect(call()).rejects.toThrow('MFA is not configured');
+    }
+    expect(touched).not.toHaveBeenCalled();
   });
 
   it('validates keys, naming the offending entry and never its value', () => {
