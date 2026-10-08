@@ -317,9 +317,9 @@ describe.each(adapters.map((a) => a.name))('authentication e2e (%s)', (adapter) 
       await http().get('/feed/mine').set('x-api-key', 'key-ci').expect(200, { id: 'svc-ci' });
     });
 
-    it('the guard answers a caller without credentials with that body and `code: missing_credentials`', async () => {
+    it('the guard answers a caller without credentials with that body and `errorCode: missing_credentials`', async () => {
       const res = await http().get('/me').expect(401);
-      expect(res.text).toBe('{"message":"Unauthorized","statusCode":401,"code":"missing_credentials"}');
+      expect(res.text).toBe('{"message":"Unauthorized","statusCode":401,"errorCode":"missing_credentials"}');
     });
   });
 
@@ -380,7 +380,7 @@ describe.each(adapters.map((a) => a.name))('authentication e2e (%s)', (adapter) 
       const { res, cookie } = await login('alice@example.com');
       expect(res.body).toEqual({ mfa: 'pending' });
       const denied = await http().get('/me').set('Cookie', cookie).expect(401);
-      expect(denied.text).toBe('{"message":"Second factor required","error":"mfa_required","statusCode":401,"code":"mfa_required"}');
+      expect(denied.text).toBe('{"message":"Second factor required","error":"mfa_required","statusCode":401,"errorCode":"mfa_required"}');
       await http().get('/feed').set('Cookie', cookie).expect(200, { personalizedFor: null });
 
       usedCode = totpNow(secret);
@@ -422,9 +422,9 @@ describe.each(adapters.map((a) => a.name))('authentication e2e (%s)', (adapter) 
     it('asks a token client of an enrolled user for the second factor', async () => {
       const alice = { email: 'alice@example.com', password: PASSWORDS['alice@example.com'] };
       const missing = await http().post('/auth/token').send(alice).expect(401);
-      expect(missing.text).toBe('{"message":"Second factor required","error":"mfa_required","statusCode":401,"code":"mfa_required"}');
+      expect(missing.text).toBe('{"message":"Second factor required","error":"mfa_required","statusCode":401,"errorCode":"mfa_required"}');
       const wrong = await http().post('/auth/token').send({ ...alice, code: usedCode }).expect(401); // a replay
-      expect(wrong.body).toEqual({ message: 'Invalid code', error: 'mfa_required', code: 'mfa_required', statusCode: 401 });
+      expect(wrong.body).toEqual({ message: 'Invalid code', error: 'mfa_required', errorCode: 'mfa_required', statusCode: 401 });
     });
 
     it('keeps tokens issued with a second factor MFA-verified across refreshes', async () => {
@@ -538,7 +538,7 @@ describe.each(adapters.map((a) => a.name))('authentication e2e (%s)', (adapter) 
         expect(bare.body).toEqual({
           message: 'Open the link in the browser you requested it from, or request a new one here',
           error: 'not_this_browser',
-          code: 'not_this_browser',
+          errorCode: 'not_this_browser',
           statusCode: 401,
         });
 

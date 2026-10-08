@@ -2,8 +2,9 @@ export interface AuthenticationErrorOptions {
   /** `WWW-Authenticate` challenge sent with the 401 over HTTP, e.g. `ApiKey header="x-api-key"`. */
   challenge?: string;
   /**
-   * Machine-readable reason (`mfa_required`), sent as the body's `code`
-   * field, and as its `error` field, which carried it before `code` existed.
+   * Machine-readable reason (`mfa_required`), sent as Nest's `errorCode`
+   * (the HTTP exception's `errorCode`, and the body's on every transport),
+   * and as the body's `error` field, which carried it first.
    */
   code?: string;
   /**

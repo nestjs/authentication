@@ -217,7 +217,7 @@ describe.each(adapters.map((a) => a.name))('session options (%s)', (adapter) => 
       await write({ 'Sec-Fetch-Site': 'cross-site', Origin: TRUSTED }).expect(201);
 
       const refused = await write({ Origin: 'https://evil.test' }).expect(401);
-      expect(refused.body).toEqual({ message: 'Unauthorized', statusCode: 401, code: 'missing_credentials' });
+      expect(refused.body).toEqual({ message: 'Unauthorized', statusCode: 401, errorCode: 'missing_credentials' });
       await write({ 'Sec-Fetch-Site': 'cross-site', Origin: 'https://evil.test' }).expect(401);
       await write({ 'Sec-Fetch-Site': 'same-site', Origin: 'https://sub.app.example.com' }).expect(401);
 

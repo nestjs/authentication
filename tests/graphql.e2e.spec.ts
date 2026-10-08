@@ -106,7 +106,7 @@ describe('GraphQL (Apollo, express)', () => {
   it('rejects anonymous operations with UNAUTHENTICATED and leaves @Public resolvers open', async () => {
     const res = await gql('{ viewer { id } }').expect(200);
     expect(res.body.errors[0]).toMatchObject({ message: 'Unauthorized', extensions: { code: 'UNAUTHENTICATED' } });
-    expect(res.body.errors[0].extensions.originalError).toEqual({ message: 'Unauthorized', statusCode: 401, code: 'missing_credentials' });
+    expect(res.body.errors[0].extensions.originalError).toEqual({ message: 'Unauthorized', statusCode: 401, errorCode: 'missing_credentials' });
     expect((await gql('{ hello }').expect(200)).body.data.hello).toBe('hello guest');
   });
 

@@ -11,7 +11,8 @@ import type { AuthenticationErrorOptions } from '../interfaces/authentication-er
  *   `TokenService.refresh()`), the module's interceptor turns it into the
  *   transport's error for its `status`: an HTTP 401 (409 for
  *   `MfaAlreadyEnrolledError`), GraphQL `UNAUTHENTICATED`, a `WsException`
- *   or an `RpcException`. Its `code` and `details` are sent in the body.
+ *   or an `RpcException`. Its `code` is sent as the body's `errorCode`
+ *   (and `error`), its `details` as `details`.
  * - Elsewhere (a queue worker), it is a plain `Error`.
  */
 export class AuthenticationError extends Error {

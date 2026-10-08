@@ -21,15 +21,13 @@ function load(pkg: '@nestjs/websockets' | '@nestjs/microservices', name: string)
 export interface Refusal {
   /** Default 401. 403 for a user the route refuses (an unverified address), 409 for a conflict (`MfaAlreadyEnrolledError`). */
   status?: 401 | 403 | 409;
-  /** Default `Unauthorized`. */
-  message?: string;
-  /** Machine-readable reason (`mfa_required`): the body's `code`, and its `error` as before `code` had its own key. */
-  code?: string;
   /**
-   * Keeps the code out of `error`, for a refusal whose body never had one
-   * (the guard's `missing_credentials`): `code` alone tells it apart.
+   * Without one, Nest's bare body (`new UnauthorizedException()`): the status
+   * phrase as `message`, and no `error`.
    */
-  codeOnly?: boolean;
+  message?: string;
+  /** Machine-readable reason (`mfa_required`): Nest's `errorCode`, and the body's `error` when there is a message. */
+  code?: string;
   /** Machine-readable data the app chose to send (`AuthenticationError`'s `details`): the body's `details`. */
   details?: Record<string, unknown>;
   /** The error behind the refusal, kept as the exception's `cause` for logs. */
@@ -38,7 +36,6 @@ export interface Refusal {
 
 const DEFAULT_MESSAGE = 'Unauthorized';
 
-/** What Nest's exceptions put in `error` when there is no code. */
 const PHRASES = { 401: 'Unauthorized', 403: 'Forbidden', 409: 'Conflict' } as const;
 
 /** The refusal for an `AuthenticationError` a provider or a handler threw. */
@@ -53,41 +50,46 @@ export function refusalOf(error: AuthenticationError): Refusal {
  * exception filter understands, for the refusal's status.
  *
  * - HTTP and GraphQL: Nest's own `UnauthorizedException` (or
- *   `ForbiddenException` for a 403, `ConflictException` for a 409), with the
- *   body Nest gives it: `{"message":"Unauthorized","statusCode":401}`, or with
- *   a message, `{"message":"Refresh token reused","error":"Unauthorized","statusCode":401}`.
- *   A `code` is sent as `code`, and replaces the status phrase in `error`
- *   (unless `codeOnly`), as it did before it had its own key; `details` come
- *   last. Over HTTP, `challenge` becomes the `WWW-Authenticate` header of a 401.
+ *   `ForbiddenException` for a 403, `ConflictException` for a 409), with
+ *   Nest's own body: `{"message":"Unauthorized","statusCode":401}`, or with a
+ *   message, `{"message":"Refresh token reused","error":"Unauthorized","statusCode":401}`.
+ *   A `code` is Nest's `errorCode` (on the exception, and in the body), and
+ *   the description in `error` when there is a message; `details` follow.
+ *   Over HTTP, `challenge` becomes the `WWW-Authenticate` header of a 401.
  * - ws and rpc: a `WsException` / `RpcException` carrying
- *   `{ statusCode, message }` (plus `status: 'error'` for ws, and with a
- *   code, `error` unless `codeOnly`, then `code` and `details`). Those filters
- *   report `HttpException`s as "Internal server error", hence their own
- *   classes, loaded only when the packages are installed.
+ *   `{ statusCode, message }` (plus `status: 'error'` for ws, and `error`,
+ *   `errorCode` and `details` as above). Those filters report
+ *   `HttpException`s as "Internal server error", hence their own classes,
+ *   loaded only when the packages are installed.
  *
  * Nothing else reaches the body: `cause` stays on the exception, for logs.
  */
 export async function refusal(
   context: ExecutionContext,
-  { status = 401, message = DEFAULT_MESSAGE, code, codeOnly, details, cause }: Refusal = {},
+  { status = 401, message, code, details, cause }: Refusal = {},
   { challenge, adapterHost }: { challenge?: string; adapterHost?: HttpAdapterHost } = {},
 ): Promise<Error> {
-  const errorCode = codeOnly ? undefined : code;
-  const extra = { ...(code && { code }), ...(details !== undefined && { details }) };
+  // The default message without a code gives the body of a bare `new UnauthorizedException()`.
+  const bare = message === undefined || (status === 401 && message === DEFAULT_MESSAGE && !code);
+  const payload = {
+    statusCode: status,
+    ...(!bare && code && { error: code }),
+    message: message ?? PHRASES[status],
+    ...(code && { errorCode: code }),
+    ...(details !== undefined && { details }),
+  };
 
   switch (context.getType<string>()) {
     case 'ws': {
       const WsException = await load('@nestjs/websockets', 'WsException');
       if (WsException) {
-        const payload = { status: 'error', statusCode: status, ...(errorCode && { error: errorCode }), message, ...extra };
-        return withCause(new WsException(payload), cause);
+        return withCause(new WsException({ status: 'error', ...payload }), cause);
       }
       break;
     }
     case 'rpc': {
       const RpcException = await load('@nestjs/microservices', 'RpcException');
       if (RpcException) {
-        const payload = { statusCode: status, ...(errorCode && { error: errorCode }), message, ...extra };
         return withCause(new RpcException(payload), cause);
       }
       break;
@@ -99,23 +101,12 @@ export async function refusal(
       break;
   }
 
-  // Key for key what `new UnauthorizedException(message, code)` gives: the
-  // default 401 (`new UnauthorizedException()`) and an empty message have no
-  // `error`, the others the code or the status phrase.
-  const phrase = errorCode ?? PHRASES[status];
-  const bare = !message || (status === 401 && message === DEFAULT_MESSAGE && !errorCode);
-  const body = bare
-    ? { message: message || phrase, statusCode: status, ...extra }
-    : { message, error: phrase, statusCode: status, ...extra };
-
-  const options = { cause };
-  if (status === 409) {
-    return new ConflictException(body, options);
-  }
-  if (status === 403) {
-    return new ForbiddenException(body, options);
-  }
-  return new UnauthorizedException(body, options);
+  const Exception = status === 409 ? ConflictException : status === 403 ? ForbiddenException : UnauthorizedException;
+  // Nest builds the body: `error` is the code (the description) or the status phrase, then `errorCode`.
+  const options = { cause, ...(code && { errorCode: code, ...(!bare && { description: code }) }) };
+  const exception = new Exception(bare ? undefined : message, options);
+  // `details` are not Nest's: its body, with them.
+  return details === undefined ? exception : new Exception({ ...(exception.getResponse() as object), details }, options);
 }
 
 function withCause(error: Error, cause: unknown): Error {

@@ -247,7 +247,7 @@ describe.each(adapters.map((a) => a.name))('API keys next to cookies and bearer 
 
   it('never counts a key as a second factor', async () => {
     const res = await http().get('/me/step-up').set(withKey()).expect(401);
-    expect(res.body).toEqual({ statusCode: 401, error: 'mfa_required', code: 'mfa_required', message: 'Second factor required' });
+    expect(res.body).toEqual({ statusCode: 401, error: 'mfa_required', errorCode: 'mfa_required', message: 'Second factor required' });
   });
 
   it('answers a bad key with an RFC 6750 invalid_token challenge, and no credentials with one challenge per realm', async () => {
@@ -361,6 +361,6 @@ describe('API keys over GraphQL, WebSockets and TCP (express)', () => {
       (reply: unknown) => ({ reply }),
       (error: unknown) => ({ error }),
     );
-    expect(outcome).toEqual({ error: { statusCode: 401, message: 'Unauthorized', code: 'missing_credentials' } });
+    expect(outcome).toEqual({ error: { statusCode: 401, message: 'Unauthorized', errorCode: 'missing_credentials' } });
   });
 });

@@ -9,7 +9,7 @@ import { AuthenticationError } from './authentication.error.js';
  * and refused links share one answer, `null`.
  *
  * An `AuthenticationError`: a route that lets it escape answers 401 on any
- * transport, with `not_this_browser` as the body's `code` (and `error`), the way
+ * transport, with `not_this_browser` as the body's `errorCode` (and `error`), the way
  * `TokenService.issue()` answers `mfa_required`.
  */
 export class MagicLinkError extends AuthenticationError {

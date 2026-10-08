@@ -1313,7 +1313,7 @@ describe('AuthenticationGuard, outside HTTP', () => {
 
     const error = await guard.canActivate(call(Handler, 'handle', {})).catch((e) => e);
     expect(error).toBeInstanceOf(RpcException);
-    expect(error.getError()).toEqual({ statusCode: 401, message: 'Unauthorized', code: 'missing_credentials' });
+    expect(error.getError()).toEqual({ statusCode: 401, message: 'Unauthorized', errorCode: 'missing_credentials' });
 
     const rpcContext: { user?: unknown } = {};
     await expect(guard.canActivate(call(Handler, 'handle', { token: 't' }, rpcContext))).resolves.toBe(true);
@@ -1337,7 +1337,7 @@ describe('AuthenticationGuard, outside HTTP', () => {
     // optional (class) + mfa (method): anonymous passes, a user without MFA does not.
     await expect(guard.canActivate(call(Optional, 'stepUp', {}))).resolves.toBe(true);
     await expect(guard.canActivate(call(Optional, 'stepUp', { token: 't' }))).rejects.toMatchObject({
-      error: { statusCode: 401, error: 'mfa_required', code: 'mfa_required', message: 'Second factor required' },
+      error: { statusCode: 401, error: 'mfa_required', errorCode: 'mfa_required', message: 'Second factor required' },
     });
     await expect(guard.canActivate(call(Optional, 'stepUp', { token: 'mfa' }))).resolves.toBe(true);
     await expect(guard.canActivate(call(Optional, 'plain', { token: 't' }))).resolves.toBe(true);
@@ -1416,7 +1416,7 @@ describe('AuthenticationError thrown under a handler', () => {
     }
   });
 
-  it('a 409 becomes each transport’s conflict, and `code` becomes the body’s `code` (and `error`)', async () => {
+  it('a 409 becomes each transport’s conflict, and `code` becomes the body’s `errorCode` (and `error`)', async () => {
     const scope = new AuthenticationScope();
     const interceptor = new AuthenticationScopeInterceptor(scope, new HttpAdapterHost());
     class Handler {
@@ -1437,10 +1437,11 @@ describe('AuthenticationError thrown under a handler', () => {
     expect(ws.getError()).toEqual({ status: 'error', statusCode: 409, message: 'Authenticator already enrolled' });
 
     const coded = await run('http', new AuthenticationError('Second factor required', { code: 'mfa_required' }));
-    expect(coded.getResponse()).toEqual({ message: 'Second factor required', error: 'mfa_required', code: 'mfa_required', statusCode: 401 });
+    expect(coded.getResponse()).toEqual({ message: 'Second factor required', error: 'mfa_required', statusCode: 401, errorCode: 'mfa_required' });
+    expect(coded.errorCode).toBe('mfa_required');
   });
 
-  describe('`code` and `details` in the body, on every transport', () => {
+  describe('`errorCode` and `details` in the body, on every transport', () => {
     const run = async (type: string, error: Error): Promise<any> => {
       const interceptor = new AuthenticationScopeInterceptor(new AuthenticationScope(), new HttpAdapterHost());
       class Handler {
@@ -1459,27 +1460,33 @@ describe('AuthenticationError thrown under a handler', () => {
         cause: new Error('internal: limiter key ip:10.0.0.1'),
       });
 
-    it('HTTP and GraphQL: Nest’s body for the code, key for key, then `code` and `details`', async () => {
-      // What `error` carried before `code` had its own key, unchanged.
-      const before = new UnauthorizedException('Too many attempts', 'too_many_attempts').getResponse();
+    it('HTTP and GraphQL: Nest’s own body and `errorCode` for the code, key for key, then `details`', async () => {
+      // `error` as before (the code as Nest's description), then Nest's own `errorCode`.
+      const nest = new UnauthorizedException('Too many attempts', { description: 'too_many_attempts', errorCode: 'too_many_attempts' });
+      expect(JSON.stringify(nest.getResponse())).toBe(
+        '{"message":"Too many attempts","error":"too_many_attempts","statusCode":401,"errorCode":"too_many_attempts"}',
+      );
       for (const type of ['http', 'graphql']) {
         const error = await run(type, throttled());
         expect(error).toBeInstanceOf(UnauthorizedException);
-        expect(JSON.stringify(error.getResponse())).toBe(JSON.stringify({ ...(before as object), code: 'too_many_attempts', details: { retryAfter: 30 } }));
+        expect(JSON.stringify(error.getResponse())).toBe(JSON.stringify({ ...(nest.getResponse() as object), details: { retryAfter: 30 } }));
+        expect(error.errorCode).toBe('too_many_attempts'); // what exception filters read
         expect(error.message).toBe('Too many attempts');
         expect(error.cause).toBeInstanceOf(AuthenticationError);
       }
     });
 
     it('ws and rpc: the same keys in their payloads', async () => {
-      const fields = { statusCode: 401, error: 'too_many_attempts', message: 'Too many attempts', code: 'too_many_attempts', details: { retryAfter: 30 } };
+      const fields = { statusCode: 401, error: 'too_many_attempts', message: 'Too many attempts', errorCode: 'too_many_attempts', details: { retryAfter: 30 } };
       expect((await run('ws', throttled())).getError()).toEqual({ status: 'error', ...fields });
       expect((await run('rpc', throttled())).getError()).toEqual(fields);
     });
 
-    it('sends `details` without a code, and no `code` key where there is none', async () => {
+    it('sends `details` without a code, and no `errorCode` where there is none', async () => {
       const error = () => new AuthenticationError('Slow down', { details: { retryAfter: 5 } });
-      expect((await run('http', error())).getResponse()).toEqual({ message: 'Slow down', error: 'Unauthorized', statusCode: 401, details: { retryAfter: 5 } });
+      const http = await run('http', error());
+      expect(http.getResponse()).toEqual({ message: 'Slow down', error: 'Unauthorized', statusCode: 401, details: { retryAfter: 5 } });
+      expect(http.errorCode).toBeUndefined();
       expect((await run('ws', error())).getError()).toEqual({ status: 'error', statusCode: 401, message: 'Slow down', details: { retryAfter: 5 } });
       expect((await run('rpc', error())).getError()).toEqual({ statusCode: 401, message: 'Slow down', details: { retryAfter: 5 } });
     });
@@ -1501,7 +1508,7 @@ describe('AuthenticationError thrown under a handler', () => {
       for (const type of ['ws', 'rpc']) {
         for (const error of [new RefreshTokenError('reused'), new MfaAlreadyEnrolledError('u1'), new AuthenticationError()]) {
           const payload = body(await run(type, error));
-          expect(payload).not.toHaveProperty('code');
+          expect(payload).not.toHaveProperty('errorCode');
           expect(payload).not.toHaveProperty('error');
           expect(payload).not.toHaveProperty('details');
         }

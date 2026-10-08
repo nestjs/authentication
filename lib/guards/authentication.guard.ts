@@ -17,8 +17,8 @@ const producedBy = new WeakMap<object, Provider>();
 
 const MFA_REQUIRED: Refusal = { message: 'Second factor required', code: 'mfa_required' };
 const EMAIL_UNVERIFIED: Refusal = { status: 403, message: 'Email address not verified', code: 'email_unverified' };
-/** No provider recognised any credentials. `code` only: this body never had an `error`. */
-const MISSING_CREDENTIALS: Refusal = { code: 'missing_credentials', codeOnly: true };
+/** No provider recognised any credentials: `new UnauthorizedException()`'s body, with an `errorCode`. */
+const MISSING_CREDENTIALS: Refusal = { code: 'missing_credentials' };
 
 /**
  * Runs the registered providers in order and records the first result on
@@ -34,7 +34,7 @@ const MISSING_CREDENTIALS: Refusal = { code: 'missing_credentials', codeOnly: tr
  * as signed in: 401 `mfa_required` where a user is required, anonymous on
  * optional routes. `@Authenticate({ mfa: true })` needs `mfa: 'verified'`,
  * and `@Authenticate({ verifiedEmail: true })` a verified address (403
- * `email_unverified`). The code is the body's `code`; a provider's
+ * `email_unverified`). The code is Nest's `errorCode`; a provider's
  * `AuthenticationError` is answered with its own `code` and `details`.
  *
  * Providers run once per call: the raw result is cached on the request, the

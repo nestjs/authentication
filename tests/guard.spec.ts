@@ -226,8 +226,10 @@ describe('AuthenticationGuard over HTTP', () => {
 
     const error = await refusal(guard.canActivate(context));
     expect(error).toBeInstanceOf(UnauthorizedException);
-    // `new UnauthorizedException()`'s body, key for key, plus the code: no `error`, which it never had.
-    expect(JSON.stringify(error.getResponse())).toBe('{"message":"Unauthorized","statusCode":401,"code":"missing_credentials"}');
+    // `new UnauthorizedException(undefined, { errorCode })`: no `error`, which this body never had.
+    expect(JSON.stringify(error.getResponse())).toBe('{"message":"Unauthorized","statusCode":401,"errorCode":"missing_credentials"}');
+    expect(error.getResponse()).toEqual(new UnauthorizedException(undefined, { errorCode: 'missing_credentials' }).getResponse());
+    expect(error.errorCode).toBe('missing_credentials');
     expect(response).toEqual({ 'WWW-Authenticate': 'First realm="a", Second realm="b"' });
     expect(headers).toHaveLength(1);
   });
@@ -261,8 +263,9 @@ describe('AuthenticationGuard over HTTP', () => {
 
     const error = await refusal(guard.canActivate(context));
     expect(JSON.stringify(error.getResponse())).toBe(
-      '{"message":"Session expired","error":"invalid_session","statusCode":401,"code":"invalid_session","details":{"expiredAt":"2026-01-01T00:00:00.000Z"}}',
+      '{"message":"Session expired","error":"invalid_session","statusCode":401,"errorCode":"invalid_session","details":{"expiredAt":"2026-01-01T00:00:00.000Z"}}',
     );
+    expect(error.errorCode).toBe('invalid_session');
     expect(error.cause).toMatchObject({ code: 'invalid_session' }); // the cause stays on the exception, for logs
     expect(response).toEqual({ 'WWW-Authenticate': 'first error="invalid"' });
   });
@@ -280,7 +283,7 @@ describe('AuthenticationGuard over HTTP', () => {
 
     const required = http('required', { 'x-first': 'pending', 'x-second': 'ok' });
     const error = await refusal(guard.canActivate(required.context));
-    expect(error.getResponse()).toEqual({ message: 'Second factor required', error: 'mfa_required', code: 'mfa_required', statusCode: 401 });
+    expect(error.getResponse()).toEqual({ message: 'Second factor required', error: 'mfa_required', errorCode: 'mfa_required', statusCode: 401 });
     expect(required.response).toEqual({}); // no challenge: the credentials are fine
     expect(second.calls).toBe(0); // the pending result still ends the chain
 
@@ -344,7 +347,7 @@ describe('AuthenticationGuard over HTTP', () => {
     const unverified = http('verified', { 'x-first': 'ok' });
     const error = await refusal(guard.canActivate(unverified.context));
     expect(error).toBeInstanceOf(ForbiddenException);
-    expect(error.getResponse()).toEqual({ message: 'Email address not verified', error: 'email_unverified', code: 'email_unverified', statusCode: 403 });
+    expect(error.getResponse()).toEqual({ message: 'Email address not verified', error: 'email_unverified', errorCode: 'email_unverified', statusCode: 403 });
     expect(unverified.request).not.toHaveProperty('user');
     expect(unverified.response).toEqual({}); // a 403 carries no challenge
 

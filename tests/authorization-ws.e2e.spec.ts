@@ -87,7 +87,7 @@ describe('@Can() on ws messages, with @nestjs/authentication', () => {
     return { send, next, ask: (event: string, data?: unknown) => (send(event, data), next()) };
   };
   const unauthorized = { event: 'exception', data: { status: 'error', message: 'Unauthorized', statusCode: 401 } };
-  const unauthenticated = { event: 'exception', data: { ...unauthorized.data, code: 'missing_credentials' } };
+  const unauthenticated = { event: 'exception', data: { ...unauthorized.data, errorCode: 'missing_credentials' } };
   const draft = { event: 'draft', data: 'Q3 plan' };
 
   beforeAll(async () => {

@@ -169,7 +169,7 @@ describe('browser flows over GraphQL (Apollo, express)', () => {
     const refused = await gql('{ orders }', unverified);
     expect(refused.body.errors[0]).toMatchObject({
       message: 'Email address not verified',
-      extensions: { code: 'FORBIDDEN', originalError: { error: 'email_unverified', code: 'email_unverified', statusCode: 403 } },
+      extensions: { code: 'FORBIDDEN', originalError: { error: 'email_unverified', errorCode: 'email_unverified', statusCode: 403 } },
     });
 
     const ok = await signIn('verified-user');
@@ -205,7 +205,7 @@ describe('browser flows over GraphQL (Apollo, express)', () => {
     const refused = await gql('{ me }', pending);
     expect(refused.body.errors[0]).toMatchObject({
       message: 'Second factor required',
-      extensions: { code: 'UNAUTHENTICATED', originalError: { error: 'mfa_required', code: 'mfa_required', statusCode: 401 } },
+      extensions: { code: 'UNAUTHENTICATED', originalError: { error: 'mfa_required', errorCode: 'mfa_required', statusCode: 401 } },
     });
 
     const completed = await gql(`mutation { completeMfa(code: "${totp(secret)}") }`, pending);

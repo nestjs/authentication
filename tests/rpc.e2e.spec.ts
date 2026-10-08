@@ -172,15 +172,15 @@ describe('microservice over TCP', () => {
   });
 
   it('answers an anonymous message with a 401, in the shape the client can read', async () => {
-    expect(await send('whoami')).toEqual({ error: { statusCode: 401, message: 'Unauthorized', code: 'missing_credentials' } });
+    expect(await send('whoami')).toEqual({ error: { statusCode: 401, message: 'Unauthorized', errorCode: 'missing_credentials' } });
   });
 
   it('passes a provider’s refusal through with its message and code', async () => {
     expect(await send('whoami', { token: 'revoked' })).toEqual({
-      error: { statusCode: 401, error: 'token_revoked', message: 'Token revoked', code: 'token_revoked' },
+      error: { statusCode: 401, error: 'token_revoked', message: 'Token revoked', errorCode: 'token_revoked' },
     });
     expect(await send('feed', { token: 'revoked' })).toEqual({
-      error: { statusCode: 401, error: 'token_revoked', message: 'Token revoked', code: 'token_revoked' },
+      error: { statusCode: 401, error: 'token_revoked', message: 'Token revoked', errorCode: 'token_revoked' },
     });
   });
 
@@ -197,7 +197,7 @@ describe('microservice over TCP', () => {
   });
 
   it('asks for a second factor: pending callers are anonymous, and `mfa: true` needs a verified one', async () => {
-    const mfaRequired = { error: { statusCode: 401, error: 'mfa_required', code: 'mfa_required', message: 'Second factor required' } };
+    const mfaRequired = { error: { statusCode: 401, error: 'mfa_required', errorCode: 'mfa_required', message: 'Second factor required' } };
     expect(await send('whoami', { token: 'pending' })).toEqual(mfaRequired);
     expect(await send('feed', { token: 'pending' })).toEqual({ reply: { for: null } });
     expect(await send('admin', { token: 'billing', action: 'purge' })).toEqual(mfaRequired);
