@@ -1,5 +1,5 @@
 import { generateKeyPairSync } from 'node:crypto';
-import { Controller, Get, Injectable, Module, Param, Query, Redirect, type INestApplication } from '@nestjs/common';
+import { Controller, Get, Injectable, Module, NotFoundException, Param, Query, Redirect, type INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { adapters, createApp } from './support/adapters.js';
 import {
@@ -21,6 +21,7 @@ import {
   type AuthenticationEvent,
   type OidcOptions,
   type OidcProfile,
+  type OidcRequest,
   type OidcResolveContext,
 } from '../lib/index.js';
 import { OidcError } from '../lib/errors/oidc.error.js';
@@ -513,6 +514,90 @@ describe.each(adapters.map((a) => a.name))('OIDC routes at another path, forRoot
   });
 });
 
+describe.each(adapters.map((a) => a.name))('OIDC on several domains, callbackUrl from the request (%s)', (adapter) => {
+  const domains = ['tenant-a.test', 'tenant-b.test'];
+  let app: INestApplication;
+  const http = () => request(app.getHttpServer());
+
+  beforeAll(async () => {
+    @Injectable()
+    class AnyoneIsAlice extends OidcAccountResolver {
+      constructor(registry: AuthenticationRegistry) {
+        super();
+        registry.registerHandler('oidc', this);
+      }
+      resolveUser() {
+        return { id: 'u1' };
+      }
+    }
+
+    @Module({
+      imports: [
+        AuthenticationModule.forRoot({
+          session: { cookie: { secure: false } },
+          password: { logN: 10 },
+          oidc: {
+            // The app's own list of domains, never the header as it came.
+            callbackUrl: ({ headers }) => {
+              const host = domains.find((domain) => domain === headers.host);
+              if (!host) {
+                throw new NotFoundException();
+              }
+              return `http://${host}/auth/oidc/:provider/callback`;
+            },
+            cookie: { secure: false },
+            providers: { mock: { issuer: idp.issuer, clientId: idp.clientId, clientSecret: idp.clientSecret } },
+          },
+        }),
+        UsersModule,
+        SessionAuthModule,
+      ],
+      controllers: [MeController, oidcController('auth/oidc')],
+      providers: [AnyoneIsAlice],
+    })
+    class MultiDomainModule {}
+
+    app = await createApp(adapter, MultiDomainModule);
+  });
+  afterAll(() => app.close());
+
+  async function begin(host: string) {
+    const login = await http().get('/auth/oidc/mock/login').set('Host', host).expect(302);
+    const params = new URL(login.headers.location).searchParams;
+    return { location: login.headers.location as string, params, tx: cookie(login, 'oidc_tx')! };
+  }
+
+  it.each(domains)('signs in on %s, with that domain’s callback URL', async (host) => {
+    const { location, params, tx } = await begin(host);
+    expect(params.get('redirect_uri')).toBe(`http://${host}/auth/oidc/mock/callback`);
+
+    const code = idp.approve(location, { sub: 'anyone' });
+    const res = await http()
+      .get('/auth/oidc/mock/callback')
+      .set('Host', host)
+      .set('Cookie', tx)
+      .query({ code, state: params.get('state')! })
+      .expect(302);
+    await http().get('/me').set('Cookie', cookie(res, 'sid')!).expect(200, { id: 'u1' });
+  });
+
+  it('fails a callback that reaches another domain than the login: the provider refuses the code', async () => {
+    const { location, params, tx } = await begin('tenant-a.test');
+    const code = idp.approve(location, { sub: 'anyone' });
+
+    await http()
+      .get('/auth/oidc/mock/callback')
+      .set('Host', 'tenant-b.test')
+      .set('Cookie', tx)
+      .query({ code, state: params.get('state')! })
+      .expect(401);
+  });
+
+  it('answers what the function throws for a domain it does not serve', async () => {
+    await http().get('/auth/oidc/mock/login').set('Host', 'evil.test').expect(404);
+  });
+});
+
 describe('OidcService', () => {
   const binding = 'S'.repeat(43);
   const state = sha256(binding);
@@ -567,6 +652,20 @@ describe('OidcService', () => {
   it('checks oidc.callbackUrl at startup', () => {
     expect(() => setup({ callbackUrl: '/auth/oidc/:provider/callback' })).toThrow(
       "OidcService: `oidc.callbackUrl` must be the absolute URL of your callback route, with `:provider` where the provider's name goes",
+    );
+  });
+
+  it('asks a callbackUrl function on each login, with the request, and checks what it returns', async () => {
+    const callbackUrl = vi.fn(({ headers }: OidcRequest) => `https://${headers.host}/auth/oidc/:provider/callback`);
+    const { service } = setup({ callbackUrl });
+
+    const login = await service.start('mock', { request: { method: 'GET', headers: { host: 'tenant-a.test' } } });
+    expect(new URL(login.url).searchParams.get('redirect_uri')).toBe('https://tenant-a.test/auth/oidc/mock/callback');
+    expect(callbackUrl).toHaveBeenCalledWith({ method: 'GET', headers: { host: 'tenant-a.test' } });
+
+    callbackUrl.mockResolvedValueOnce('/auth/oidc/:provider/callback');
+    await expect(service.start('mock', { request: { method: 'GET', headers: {} } })).rejects.toThrow(
+      "OidcService: the `oidc.callbackUrl` function must return the absolute URL of your callback route, with `:provider` where the provider's name goes",
     );
   });
 

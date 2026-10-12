@@ -41,8 +41,16 @@ export interface OidcOptions extends OidcClientOptions {
    * The public URL of your callback route, the redirect URI you register
    * with each provider. `:provider` is replaced by the provider's name:
    * `https://app.example.com/auth/oidc/:provider/callback`.
+   *
+   * An app served under several domains passes a function of the request
+   * instead, called on the login and again on the callback: both must
+   * answer the same URL, or the provider refuses the code. Check the host
+   * against your own list of domains rather than echoing the header, and
+   * register every URL it can answer with each provider. The transaction
+   * cookie is bound to the host that set it, so a login finishes on the
+   * domain where it started.
    */
-  callbackUrl: string;
+  callbackUrl: string | ((request: OidcRequest) => string | Promise<string>);
   providers: Record<string, OidcProviderConfig>;
   /** Where to land after sign-in when the login had no `redirectTo`. Default `/`. */
   redirectAfterLogin?: string;
