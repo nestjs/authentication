@@ -119,6 +119,58 @@ describe('MagicLinkService in an HTTP exchange', () => {
     expect(opened.value).toMatchObject({ session: { userId: 'u1' } });
   });
 
+  it('keeps a link usable in its browser after that browser requests another, and settles each on its own', async () => {
+    const { service, inRequest, mailer, tokenOf, cookieHeader } = setup();
+    const first = await inRequest({}, () => service.create('ada@example.com'));
+    const second = await inRequest(cookieHeader(first.cookies[0]), () => service.create('ada@example.com'));
+    const [older, newer] = mailer.sent.map(tokenOf);
+    expect(second.cookies).toEqual([expect.stringMatching(/^__Host-magic_link_tx=[\w-]{12}\.[\w-]{43}~[\w-]{12}\.[\w-]{43}; Max-Age=600; /)]);
+    // The newest link first, then the one before.
+    expect(second.cookies[0]).toContain(`~${first.cookies[0].split(';')[0].slice('__Host-magic_link_tx='.length)};`);
+
+    const openedOlder = await inRequest(cookieHeader(second.cookies[0]), () => service.consume(older));
+    expect(openedOlder.value).toMatchObject({ session: { userId: 'u1' } });
+    // Only the older link's secret goes: the cookie keeps the newer one, which opens next.
+    const left = openedOlder.cookies[0];
+    expect(left).toMatch(/^__Host-magic_link_tx=[\w-]{12}\.[\w-]{43}; Max-Age=600; /);
+    expect(second.cookies[0].startsWith(left.split(';')[0])).toBe(true);
+
+    const openedNewer = await inRequest(cookieHeader(left), () => service.consume(newer));
+    expect(openedNewer.value).toMatchObject({ session: { userId: 'u1' } });
+    expect(openedNewer.cookies[0]).toMatch(/^__Host-magic_link_tx=; Max-Age=0; /);
+  });
+
+  it('holds the last five links a browser requested, and refuses the ones before as another browser’s', async () => {
+    const { service, inRequest, mailer, tokenOf, cookieHeader, seen } = setup();
+    let headers: Record<string, string> = {};
+    const pairs: string[] = [];
+    for (let i = 0; i < 6; i++) {
+      const created = await inRequest(headers, () => service.create('ada@example.com'));
+      headers = cookieHeader(created.cookies[0]);
+      pairs.push(headers.cookie.slice('__Host-magic_link_tx='.length).split('~')[0]);
+    }
+    // Newest first; the first link's secret is the one gone.
+    expect(headers.cookie).toBe(`__Host-magic_link_tx=${pairs.slice(1).reverse().join('~')}`);
+    const [oldest, kept] = mailer.sent.map(tokenOf);
+
+    const refused = await inRequest(headers, () => service.consume(oldest));
+    expect(refused.error).toBeInstanceOf(MagicLinkError);
+    expect(refused.cookies).toEqual([]);
+    expect(seen).toEqual([{ type: 'magic-link-refused', reason: 'not-this-browser' }]);
+
+    await expect(inRequest(headers, () => service.consume(kept))).resolves.toMatchObject({ value: { session: { userId: 'u1' } } });
+  });
+
+  it('ignores whatever else the cookie holds', async () => {
+    const { service, inRequest, mailer, tokenOf, cookieHeader } = setup();
+    const created = await inRequest({}, () => service.create('ada@example.com'));
+    const pair = cookieHeader(created.cookies[0]).cookie.slice('__Host-magic_link_tx='.length);
+
+    const opened = await inRequest({ cookie: `__Host-magic_link_tx=junk~a.b.c~${pair}` }, () => service.consume(tokenOf(mailer.sent[0])));
+    expect(opened.value).toMatchObject({ session: { userId: 'u1' } });
+    expect(opened.cookies[0]).toMatch(/^__Host-magic_link_tx=; Max-Age=0; /);
+  });
+
   it('burns a link for an address nobody may sign in with, says so in the event, and clears the cookie', async () => {
     const { service, inRequest, mailer, tokenOf, cookieHeader, seen } = setup();
     const created = await inRequest({}, () => service.create('stranger@example.com'));

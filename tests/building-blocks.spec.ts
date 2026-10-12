@@ -1093,7 +1093,7 @@ describe('MagicLinkService', () => {
       reason: 'not-this-browser',
       status: 401,
       code: 'not_this_browser',
-      message: 'Open the link in the browser you requested it from, or request a new one here',
+      message: 'Open the latest link in the browser you requested it from, or request a new one here',
     });
 
     expect(seen).toEqual([

@@ -2,9 +2,10 @@ import { AuthenticationError } from './authentication.error.js';
 
 /**
  * A link was presented in a browser other than the one that requested it
- * (see `magicLink.bindToBrowser`). The one refusal `consume()` tells
- * apart: the customer can act on it (open the link where they asked for
- * it, or request a new one here), and it is decided before the link is
+ * (see `magicLink.bindToBrowser`), or in that browser after it requested
+ * five newer ones. The one refusal `consume()` tells apart: the customer
+ * can act on it (open the latest link where they asked for it, or request
+ * a new one here), and it is decided before the link is
  * looked up, so it reveals nothing about the token. Unknown, used, expired
  * and refused links share one answer, `null`.
  *
@@ -17,7 +18,7 @@ export class MagicLinkError extends AuthenticationError {
   readonly reason = 'not-this-browser' as const;
 
   constructor() {
-    super('Open the link in the browser you requested it from, or request a new one here', { code: 'not_this_browser' });
+    super('Open the latest link in the browser you requested it from, or request a new one here', { code: 'not_this_browser' });
     this.name = 'MagicLinkError';
   }
 }

@@ -536,7 +536,7 @@ describe.each(adapters.map((a) => a.name))('authentication e2e (%s)', (adapter) 
         // the MagicLinkError escapes the route, and the module answers it, unlike a bad link's 401.
         const bare = await http().post('/auth/magic/consume').send({ token: theirs.token }).expect(401);
         expect(bare.body).toEqual({
-          message: 'Open the link in the browser you requested it from, or request a new one here',
+          message: 'Open the latest link in the browser you requested it from, or request a new one here',
           error: 'not_this_browser',
           errorCode: 'not_this_browser',
           statusCode: 401,
@@ -557,6 +557,16 @@ describe.each(adapters.map((a) => a.name))('authentication e2e (%s)', (adapter) 
       } finally {
         subscription.unsubscribe();
       }
+    });
+
+    it('keeps the first link usable in a browser that asked again ("resend")', async () => {
+      const first = await requestLink('bob@example.com');
+      const again = await http().post('/auth/magic').set('Cookie', first.tx!).send({ email: 'bob@example.com' }).expect(202);
+      const second = { token: new URL(outbox.at(-1)!.url).searchParams.get('token')!, tx: cookieOf(again, '__Host-magic_link_tx')! };
+
+      const opened = await http().post('/auth/magic/consume').set('Cookie', second.tx).send({ token: first.token }).expect(200);
+      const left = cookieOf(opened, '__Host-magic_link_tx')!;
+      await http().post('/auth/magic/consume').set('Cookie', left).send({ token: second.token }).expect(200);
     });
 
     it('answers a request without a usable address like any other, and sends nothing', async () => {

@@ -98,7 +98,7 @@ describe('error classes', () => {
   it('MagicLinkError tells the customer what to do, and nothing about the token', () => {
     expect(new MagicLinkError()).toMatchObject({
       reason: 'not-this-browser',
-      message: 'Open the link in the browser you requested it from, or request a new one here',
+      message: 'Open the latest link in the browser you requested it from, or request a new one here',
     });
     expect(new JwtError('token expired').code).toBeUndefined();
   });

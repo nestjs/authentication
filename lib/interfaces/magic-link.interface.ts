@@ -26,7 +26,8 @@ export interface MagicLinkOptions {
    * Whether a link works only in the browser that requested it. Default
    * `true`: `create()` sets a transaction cookie, and `consume()` refuses a
    * link the browser holds no cookie for (`magic-link-refused`,
-   * `not-this-browser`). Without it, anyone can request a link for their
+   * `not-this-browser`). The cookie keeps the last five links the browser
+   * requested: a "resend" does not void the link before it. Without it, anyone can request a link for their
    * own address and get someone else to open it, which signs that person's
    * browser in to the attacker's account (login CSRF). `false` trades that
    * for links that work on another device than the one that asked for them
