@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger, Optional, type OnModuleDestroy } from '@nestjs/common';
+import { AuthenticationScope } from '../context/authentication-scope.service.js';
 import { AuthenticationRegistry } from '../services/authentication-registry.service.js';
 import { AuthenticationStorage } from '../storage/authentication.storage.js';
 import { AUTHENTICATION_MODULE_OPTIONS } from '../authentication.constants.js';
@@ -55,6 +56,7 @@ export class PasswordResetService implements OnModuleDestroy {
     private readonly signInService: SignInService,
     @Optional() @Inject(AUTHENTICATION_MODULE_OPTIONS) options?: { passwordReset?: PasswordResetOptions },
     private readonly events: AuthenticationEvents = new AuthenticationEvents(),
+    private readonly scope: AuthenticationScope = new AuthenticationScope(),
   ) {
     this.options = options?.passwordReset;
     if (this.options) {
@@ -94,10 +96,19 @@ export class PasswordResetService implements OnModuleDestroy {
    * changed its address or password since the link was sent. `null` too,
    * before the token is looked up (so the link still works), for a password
    * `PasswordHasher` refuses: not a string, empty, or over 4 KiB. Check your
-   * own password rules before calling it.
+   * own password rules before calling it. With `signIn`, a request from
+   * another origin than the app's own and `session.trustedOrigins` gets a
+   * `ForbiddenException` first, as `SignInService.signIn()` does, so the link
+   * and the password stay as they were. Without `signIn`, the origin is not
+   * checked.
    */
   async reset(token: string, password: string, { signIn = false }: ResetPasswordOptions = {}): Promise<PasswordResetResult | null> {
     const { handler } = this.feature();
+    // Signing in would refuse this request at the end, after the link is spent and the password
+    // changed: refuse it before, whatever the token is.
+    if (signIn) {
+      this.signInService.refuseCrossOrigin(this.scope.exchange()?.request);
+    }
     if (typeof token !== 'string' || !TOKEN_PATTERN.test(token) || !isHashablePassword(password)) {
       return null;
     }

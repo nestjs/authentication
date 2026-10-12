@@ -3,7 +3,8 @@
  * link URLs, expiry boundaries, what each refusal leaves behind, purposes kept apart, and the
  * requests the module waits for on shutdown.
  */
-import { Logger } from '@nestjs/common';
+import { ForbiddenException, Logger } from '@nestjs/common';
+import { ExecutionContextHost } from '@nestjs/core/internal';
 import {
   AuthenticationEvents,
   EmailVerificationHandler,
@@ -23,6 +24,7 @@ import {
   type PasswordResetAccount,
   type PasswordResetLink,
 } from '../lib/index.js';
+import { AuthenticationScope } from '../lib/context/authentication-scope.service.js';
 import { sha256 } from '../lib/utils/crypto.util.js';
 import { registryWith, storageWith } from './fixtures.js';
 
@@ -222,8 +224,19 @@ function resetWith({ withVerification = false, ttl }: { withVerification?: boole
 
   const sessions = new SessionService(storage, {});
   const tokens = new TokenService(storage, { accessToken: { key: 'x'.repeat(32) } });
-  const signIn = new SignInService(sessions, new MfaService(storage, {}), tokens, undefined, undefined, events);
-  const service = new PasswordResetService(storage, registry, hasher, sessions, tokens, signIn, options, events);
+  const scope = new AuthenticationScope();
+  const signIn = new SignInService(sessions, new MfaService(storage, {}), tokens, scope, undefined, events);
+  const service = new PasswordResetService(storage, registry, hasher, sessions, tokens, signIn, options, events, scope);
+
+  class Handler {
+    handle() {}
+  }
+  /** Runs `fn` as the handler of a POST with these headers. */
+  const inRequest = <R>(headers: Record<string, string>, fn: () => Promise<R>) => {
+    const context = new ExecutionContextHost([{ headers, method: 'POST' }, {}], Handler, Handler.prototype.handle);
+    context.setType('http');
+    return scope.run({ result: null, context }, fn);
+  };
 
   /** Lets the work request() started in the background finish. */
   const settle = () => service.onModuleDestroy();
@@ -233,7 +246,7 @@ function resetWith({ withVerification = false, ttl }: { withVerification?: boole
     return tokenOf(accounts.sent.at(-1)!.url);
   };
 
-  return { service, accounts, mailer, hasher, sessions, tokens, emailTokens, seen, settle, linkFor, tick: (ms: number) => (clock += ms) };
+  return { service, accounts, mailer, hasher, sessions, tokens, emailTokens, seen, settle, linkFor, inRequest, tick: (ms: number) => (clock += ms) };
 }
 
 describe('PasswordResetService', () => {
@@ -359,6 +372,57 @@ describe('PasswordResetService', () => {
       'sign-in',
     ]);
     expect(seen.at(-1)).toMatchObject({ type: 'sign-in', userId: 'u1', method: 'password-reset' });
+  });
+
+  describe('reset with signIn from a request of another origin', () => {
+    const crossSite = { host: 'app.test', origin: 'https://evil.test', 'sec-fetch-site': 'cross-site' };
+    const sameOrigin = { host: 'app.test', origin: 'https://app.test', 'sec-fetch-site': 'same-origin' };
+
+    it('refuses before it spends the link, changes the password, ends a session or emits an event', async () => {
+      const { service, accounts, hasher, sessions, seen, linkFor, inRequest } = resetWith();
+      accounts.rows.set('u1', { id: 'u1', email: 'ada@example.com', passwordHash: await hasher.hash('old password') });
+      const laptop = await sessions.create('u1');
+      const token = await linkFor('ada@example.com');
+
+      await expect(inRequest(crossSite, () => service.reset(token, 'new password', { signIn: true }))).rejects.toThrow(
+        new ForbiddenException('Cross-origin sign-in refused'),
+      );
+
+      await expect(hasher.verify('old password', accounts.rows.get('u1')!.passwordHash)).resolves.toBe(true);
+      await expect(hasher.verify('new password', accounts.rows.get('u1')!.passwordHash)).resolves.toBe(false);
+      await expect(sessions.validate(laptop.token)).resolves.toMatchObject({ userId: 'u1' });
+      expect(seen.map((event) => event.type)).toEqual(['password-reset-requested']);
+
+      const retried = await inRequest(sameOrigin, () => service.reset(token, 'new password', { signIn: true }));
+      expect(retried).toMatchObject({ userId: 'u1', signedIn: expect.anything() });
+    });
+
+    it('answers the same refusal for a token that is not valid, so it does not tell which tokens are', async () => {
+      const { service, inRequest } = resetWith();
+
+      await expect(inRequest(crossSite, () => service.reset('X'.repeat(43), 'new password', { signIn: true }))).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+    });
+
+    it('signs in a request of the app’s own origin', async () => {
+      const { service, accounts, sessions, linkFor, inRequest } = resetWith();
+      accounts.rows.set('u1', { id: 'u1', email: 'ada@example.com', passwordHash: 'h' });
+
+      const result = await inRequest(sameOrigin, async () => service.reset(await linkFor('ada@example.com'), 'new password', { signIn: true }));
+
+      expect(result).toEqual({ userId: 'u1', signedIn: expect.objectContaining({ cookie: expect.stringMatching(/^__Host-sid=/) }) });
+      await expect(sessions.validate(result!.signedIn!.token)).resolves.toMatchObject({ userId: 'u1' });
+    });
+
+    it('does not check the origin when it does not sign in, as a reset never did', async () => {
+      const { service, accounts, hasher, linkFor, inRequest } = resetWith();
+      accounts.rows.set('u1', { id: 'u1', email: 'ada@example.com', passwordHash: 'h' });
+      const token = await linkFor('ada@example.com');
+
+      await expect(inRequest(crossSite, () => service.reset(token, 'new password'))).resolves.toEqual({ userId: 'u1' });
+      await expect(hasher.verify('new password', accounts.rows.get('u1')!.passwordHash)).resolves.toBe(true);
+    });
   });
 
   it('mails the link to the address the account has stored, never to the one typed', async () => {

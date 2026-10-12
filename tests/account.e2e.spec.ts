@@ -372,6 +372,18 @@ describe.each(adapters.map((a) => a.name))('password reset and email verificatio
       expect(seen.map((e) => e.type)).toEqual(['password-reset-requested', 'password-reset', 'sign-in']);
     });
 
+    it('refuses a sign-in from another origin before it spends the link, and keeps the password', async () => {
+      const ada = await account();
+      const token = tokenOf(await resetLink(ada.email));
+      const send = { token, password: 'new password', signIn: true };
+
+      await http().post('/password/reset').set('Origin', 'https://evil.test').send(send).expect(403);
+      expect(await app.get(PasswordHasher).verify('old password', ada.passwordHash)).toBe(true);
+
+      await http().post('/password/reset').send(send).expect(200); // the same link, from a client without an Origin
+      expect(await app.get(PasswordHasher).verify('new password', ada.passwordHash)).toBe(true);
+    });
+
     it('logs a failed delivery instead of failing the request', async () => {
       const ada = await account();
       const failing = vi.spyOn(ResetMailer.prototype, 'send').mockRejectedValueOnce(new Error('SMTP down'));
