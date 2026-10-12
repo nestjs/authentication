@@ -167,7 +167,7 @@ describe.each(adapters.map((a) => a.name))('magic links (%s)', (adapter) => {
 
       const elsewhere = await http().post('/auth/magic/consume').send({ token }).expect(401);
       expect(elsewhere.body).toEqual({
-        message: 'Open the link in the browser you requested it from, or request a new one here',
+        message: 'Open the latest link in the browser you requested it from, or request a new one here',
         error: 'not_this_browser',
         errorCode: 'not_this_browser',
         statusCode: 401,

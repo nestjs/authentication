@@ -33,6 +33,30 @@ function hintOf(token: string): string {
 }
 
 /**
+ * How many links a browser holds the secrets of: a "resend" leaves the
+ * links it requested before usable there, up to this many.
+ */
+const PENDING_LINKS = 5;
+const HINT_PATTERN = /^[\w-]{12}$/;
+
+/** A link this browser requested: its hint, and the secret it is stored under. */
+type PendingLink = { hint: string; secret: string };
+
+/** The links in the cookie, newest first: `<hint>.<secret>`, joined by `~`. Anything else is dropped. */
+function readPending(value: string | undefined): PendingLink[] {
+  return (value ?? '')
+    .split('~')
+    .map((pair) => pair.split('.'))
+    .filter(([hint, secret, ...rest]) => HINT_PATTERN.test(hint) && TOKEN_PATTERN.test(secret ?? '') && !rest.length)
+    .slice(0, PENDING_LINKS)
+    .map(([hint, secret]) => ({ hint, secret }));
+}
+
+function writePending(links: PendingLink[]): string {
+  return links.map(({ hint, secret }) => `${hint}.${secret}`).join('~');
+}
+
+/**
  * Passwordless sign-in links: 256-bit single-use tokens, stored hashed,
  * short-lived, and bound to the browser that requested them.
  *
@@ -44,7 +68,9 @@ function hintOf(token: string): string {
  * site's page must not start a link here), and sets an `HttpOnly`,
  * `SameSite=Lax` cookie, `__Host-magic_link_tx`, holding a secret that no
  * link carries; the store keys the link by the token and that secret
- * together, so `consume()` finds it only with the cookie. The `__Host-`
+ * together, so `consume()` finds it only with the cookie. The cookie holds
+ * the secrets of the last five links the browser requested, so a "resend"
+ * leaves the link before it usable there. The `__Host-`
  * prefix keeps sibling subdomains from planting one. So the link's page
  * must be on the same site as the API, as the session cookie requires
  * anyway, and a link forwarded to another browser or device, or read from
@@ -114,7 +140,10 @@ export class MagicLinkService {
 
     let cookie: string | undefined;
     if (binding) {
-      cookie = this.txCookie(`${hintOf(token)}.${binding}`, this.ttl / 1000);
+      // The links this browser requested before stay usable here, the oldest dropped past the cap.
+      const hint = hintOf(token);
+      const before = readPending(this.pendingCookie(this.scope.exchange()?.request)).filter((link) => link.hint !== hint);
+      cookie = this.txCookie(writePending([{ hint, secret: binding }, ...before].slice(0, PENDING_LINKS)), this.ttl / 1000);
       this.setCookie(cookie);
     }
 
@@ -146,24 +175,28 @@ export class MagicLinkService {
     }
 
     let binding: string | undefined;
+    let pending: PendingLink[] = [];
+    let link: PendingLink | undefined;
     if (this.bindToBrowser) {
-      const req = request ?? this.scope.exchange()?.request;
-      const [hint, secret] = (readCookie(firstHeader(req?.headers, 'cookie'), this.txCookieName) ?? '').split('.');
-      // The hint names the link this browser requested; anyone holding the link can compute it, so it
+      pending = readPending(this.pendingCookie(request ?? this.scope.exchange()?.request));
+      // The hint names a link this browser requested; anyone holding the link can compute it, so it
       // only tells a link opened elsewhere from a bad one. The secret, which no link carries, is what
       // the link is stored under: a leaked or forwarded link finds nothing without it. On a refusal
-      // here the cookie stays (it may be for a link this browser did request), and nothing is looked
+      // here the cookie stays (it holds the links this browser did request), and nothing is looked
       // up: a link was presented, not proved.
-      if (!hint || !secret || !TOKEN_PATTERN.test(secret) || !safeEqual(hint, hintOf(token))) {
+      const hint = hintOf(token);
+      link = pending.find((candidate) => safeEqual(candidate.hint, hint));
+      if (!link) {
         this.events.emit({ type: 'magic-link-refused', reason: 'not-this-browser' });
         throw new MagicLinkError();
       }
-      binding = secret;
+      binding = link.secret;
     }
 
     const record = await this.storage.magicLinks.consumeMagicLink(linkId(token, binding));
-    // This browser's link is settled either way: the cookie goes.
-    this.setCookie(this.txCookie('', 0));
+    // This link is settled either way: its secret goes, and the cookie with it when it held no other.
+    const rest = writePending(pending.filter((candidate) => candidate !== link));
+    this.setCookie(this.txCookie(rest, rest ? this.ttl / 1000 : 0));
 
     if (!record) {
       return this.refuse('unknown');
@@ -208,6 +241,10 @@ export class MagicLinkService {
   private refuse(reason: Exclude<AuthenticationMagicLinkRefusedEvent['reason'], 'not-this-browser'>, email?: string): null {
     this.events.emit({ type: 'magic-link-refused', reason, ...(email && { email }) });
     return null;
+  }
+
+  private pendingCookie(request: MagicLinkRequest | undefined): string | undefined {
+    return readCookie(firstHeader(request?.headers, 'cookie'), this.txCookieName);
   }
 
   private txCookie(value: string, maxAge: number): string {
