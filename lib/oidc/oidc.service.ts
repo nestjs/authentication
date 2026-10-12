@@ -92,7 +92,9 @@ export class OidcService {
   ) {
     this.options = options?.oidc;
     if (this.options) {
-      assertCallbackUrl(this.options.callbackUrl);
+      if (typeof this.options.callbackUrl !== 'function') {
+        assertCallbackUrl(this.options.callbackUrl);
+      }
       assertProviderCredentials(this.options.providers);
     }
 
@@ -140,7 +142,7 @@ export class OidcService {
     }
 
     const { url, transaction, binding } = await this.client(provider)
-      .authorizationRequest(this.callbackUrl(provider), safeRedirectPath(redirectTo), this.transactionTtl)
+      .authorizationRequest(await this.callbackUrl(provider, req), safeRedirectPath(redirectTo), this.transactionTtl)
       .catch(toHttp);
     await this.storage.oidcStates.saveOidcState({ ...transaction, ...(linking && { link: linking }) });
     return this.redirect(exchange?.response, url, [this.txCookie(binding, this.transactionTtl / 1000)]);
@@ -170,7 +172,10 @@ export class OidcService {
       throw new BadRequestException('unknown or expired login');
     }
 
-    const result = await this.client(provider).callback(query, transaction, this.callbackUrl(provider)).catch(toHttp);
+    // Asked again rather than stored with the login: the cookie keeps the callback on the login's host,
+    // and a function that answers otherwise gets the code refused by the provider, not accepted.
+    const callbackUrl = await this.callbackUrl(provider, req);
+    const result = await this.client(provider).callback(query, transaction, callbackUrl).catch(toHttp);
 
     const location = transaction.redirectTo ?? options.redirectAfterLogin ?? '/';
     if (transaction.link) {
@@ -229,8 +234,14 @@ export class OidcService {
     return session && session.mfa !== 'pending' ? session : null;
   }
 
-  private callbackUrl(provider: string) {
-    return this.feature().options.callbackUrl.replaceAll(':provider', encodeURIComponent(provider));
+  /** `oidc.callbackUrl` for this request, with the provider's name in it. */
+  private async callbackUrl(provider: string, request: OidcRequest) {
+    const { callbackUrl } = this.feature().options;
+    const url = typeof callbackUrl === 'function' ? await callbackUrl(request) : callbackUrl;
+    if (typeof callbackUrl === 'function') {
+      assertCallbackUrl(url, 'the `oidc.callbackUrl` function must return');
+    }
+    return url.replaceAll(':provider', encodeURIComponent(provider));
   }
 
   private txCookie(value: string, maxAge: number) {
@@ -242,8 +253,11 @@ export class OidcService {
   }
 }
 
-/** `oidc.callbackUrl`, checked at startup: an absolute http(s) URL. */
-function assertCallbackUrl(value: unknown) {
+/**
+ * `oidc.callbackUrl`, checked at startup (or each URL its function returns,
+ * when it returns it): an absolute http(s) URL.
+ */
+function assertCallbackUrl(value: unknown, must = '`oidc.callbackUrl` must be') {
   let url: URL | undefined;
   try {
     url = typeof value === 'string' ? new URL(value.replaceAll(':provider', 'provider')) : undefined;
@@ -253,7 +267,7 @@ function assertCallbackUrl(value: unknown) {
 
   if (!url || (url.protocol !== 'https:' && url.protocol !== 'http:')) {
     throw new Error(
-      'OidcService: `oidc.callbackUrl` must be the absolute URL of your callback route, with `:provider` where the ' +
+      `OidcService: ${must} the absolute URL of your callback route, with \`:provider\` where the ` +
         `provider's name goes, e.g. 'https://app.example.com/auth/oidc/:provider/callback'. Got ${JSON.stringify(value)}.`,
     );
   }
