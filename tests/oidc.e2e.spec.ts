@@ -21,6 +21,7 @@ import {
   type AuthenticationEvent,
   type OidcOptions,
   type OidcProfile,
+  type OidcProviderConfig,
   type OidcRequest,
   type OidcResolveContext,
 } from '../lib/index.js';
@@ -598,6 +599,120 @@ describe.each(adapters.map((a) => a.name))('OIDC on several domains, callbackUrl
   });
 });
 
+describe.each(adapters.map((a) => a.name))('OIDC providers from a function, a client per tenant (%s)', (adapter) => {
+  // The app's tenants table, which grows and changes while the app runs.
+  const tenants = new Map<string, OidcProviderConfig>();
+  const profiles: OidcProfile[] = [];
+  let app: INestApplication;
+  const http = () => request(app.getHttpServer());
+
+  beforeAll(async () => {
+    @Injectable()
+    class AnyoneIsAlice extends OidcAccountResolver {
+      constructor(registry: AuthenticationRegistry) {
+        super();
+        registry.registerHandler('oidc', this);
+      }
+      resolveUser(profile: OidcProfile) {
+        profiles.push(profile);
+        return { id: 'u1' };
+      }
+    }
+
+    @Module({
+      imports: [
+        AuthenticationModule.forRoot({
+          session: { cookie: { secure: false } },
+          password: { logN: 10 },
+          oidc: {
+            callbackUrl: 'http://app.test/auth/oidc/:provider/callback',
+            cookie: { secure: false },
+            providers: async (name) => tenants.get(name),
+          },
+        }),
+        UsersModule,
+        SessionAuthModule,
+      ],
+      controllers: [MeController, oidcController('auth/oidc')],
+      providers: [AnyoneIsAlice],
+    })
+    class TenantsModule {}
+
+    app = await createApp(adapter, TenantsModule);
+  });
+  afterAll(() => app.close());
+  afterEach(() => {
+    tenants.clear();
+    idp.clients.clear();
+  });
+
+  /** A tenant signs up, or rotates its secret: its client at the IdP, and its row in the app's table. */
+  function saveTenant(key: string, secret = `${key}-secret`) {
+    idp.clients.set(`${key}-client`, secret);
+    tenants.set(key, { issuer: idp.issuer, clientId: `${key}-client`, clientSecret: secret });
+  }
+
+  async function begin(tenant: string) {
+    const login = await http().get(`/auth/oidc/${tenant}/login`).expect(302);
+    const params = new URL(login.headers.location).searchParams;
+    return { location: login.headers.location as string, params, tx: cookie(login, 'oidc_tx')! };
+  }
+
+  const finish = (tenant: string, { location, params, tx }: Awaited<ReturnType<typeof begin>>) =>
+    http()
+      .get(`/auth/oidc/${tenant}/callback`)
+      .set('Cookie', tx)
+      .query({ code: idp.approve(location, { sub: 'alice-sub' }), state: params.get('state')! });
+
+  it('signs in with a tenant added after startup, through its own client', async () => {
+    saveTenant('acme');
+
+    const login = await begin('acme');
+    expect(login.params.get('client_id')).toBe('acme-client');
+    expect(login.params.get('redirect_uri')).toBe('http://app.test/auth/oidc/acme/callback');
+
+    const res = await finish('acme', login).expect(302);
+    await http().get('/me').set('Cookie', cookie(res, 'sid')!).expect(200, { id: 'u1' });
+    expect(profiles.at(-1)).toMatchObject({ provider: 'acme', subject: 'alice-sub' });
+  });
+
+  it('answers 404 for a name the function does not serve, and for a tenant removed during a login', async () => {
+    await http().get('/auth/oidc/nope/login').expect(404);
+    await http().get('/auth/oidc/__proto__/login').expect(404);
+
+    saveTenant('gone');
+    const login = await begin('gone');
+    tenants.delete('gone');
+    await finish('gone', login).expect(404);
+  });
+
+  it('uses a rotated secret on the callback of a login under way, and on the next logins', async () => {
+    saveTenant('acme', 'old-secret');
+    const underway = await begin('acme');
+
+    saveTenant('acme', 'new-secret');
+    await finish('acme', underway).expect(302);
+    await finish('acme', await begin('acme')).expect(302);
+
+    // Rotated at the IdP only: the app still sends the secret it has, and the IdP refuses it.
+    idp.clients.set('acme-client', 'newer-secret');
+    await finish('acme', await begin('acme')).expect(401);
+  });
+
+  it('fetches the discovery document and the key set once for all the tenants of one issuer', async () => {
+    saveTenant('acme');
+    saveTenant('globex');
+    await finish('acme', await begin('acme')).expect(302);
+    const fetched = { discovery: idp.discoveryRequests, jwks: idp.jwksRequests };
+
+    await finish('globex', await begin('globex')).expect(302);
+    saveTenant('acme', 'rotated-secret');
+    await finish('acme', await begin('acme')).expect(302);
+
+    expect({ discovery: idp.discoveryRequests, jwks: idp.jwksRequests }).toEqual(fetched);
+  });
+});
+
 describe('OidcService', () => {
   const binding = 'S'.repeat(43);
   const state = sha256(binding);
@@ -667,6 +782,30 @@ describe('OidcService', () => {
     await expect(service.start('mock', { request: { method: 'GET', headers: {} } })).rejects.toThrow(
       "OidcService: the `oidc.callbackUrl` function must return the absolute URL of your callback route, with `:provider` where the provider's name goes",
     );
+  });
+
+  it('asks a providers function on the login and again on the callback, and checks what it returns', async () => {
+    const mock = { issuer: idp.issuer, clientId: idp.clientId, clientSecret: idp.clientSecret };
+    const providers = vi.fn(async (name: string): Promise<OidcProviderConfig | null> => (name === 'mock' ? mock : null));
+    const { service } = setup({ providers });
+
+    const login = await service.start('mock', { request: { method: 'GET', headers: {} } });
+    const code = idp.approve(login.url, { sub: 'alice-sub' });
+    const request = { method: 'GET', headers: { cookie: login.cookies[0].split(';')[0] } };
+    await service.finish('mock', { state: new URL(login.url).searchParams.get('state'), code }, { request });
+    expect(providers.mock.calls).toEqual([['mock'], ['mock']]);
+
+    await expect(service.start('nope', { request })).rejects.toThrow(NotFoundException);
+
+    providers.mockResolvedValueOnce({ ...mock, clientSecret: '' });
+    await expect(service.start('mock', { request })).rejects.toThrow(
+      "OidcService: the `oidc.providers` function returned the provider 'mock' without its `clientSecret` (the client " +
+        "secret the provider issued; a public client sets `tokenEndpointAuthMethod: 'none'` instead).",
+    );
+
+    providers.mockResolvedValueOnce({ issuer: idp.issuer, clientId: idp.publicClientId, tokenEndpointAuthMethod: 'none' });
+    const publicLogin = await service.start('mock', { request });
+    expect(new URL(publicLogin.url).searchParams.get('client_id')).toBe(idp.publicClientId);
   });
 
   it('checks each provider’s credentials at startup; a public client says so', () => {

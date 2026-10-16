@@ -40,6 +40,8 @@ export class MockOidcProvider {
   readonly clientSecret = 's3cr3t:with/special+chars';
   /** A public client (PKCE only, no secret). */
   readonly publicClientId = 'nest-public-client';
+  /** More confidential clients, one per tenant, by id: their secret, which a test may rotate. */
+  readonly clients = new Map<string, string>();
   /** How each accepted token request authenticated the client. */
   readonly clientAuthentications: ('client_secret_basic' | 'client_secret_post' | 'none')[] = [];
   issuer = '';
@@ -49,6 +51,7 @@ export class MockOidcProvider {
   private readonly codes = new Map<string, Grant>();
   private readonly accessTokens = new Map<string, Grant | 'github'>();
   jwksRequests = 0;
+  discoveryRequests = 0;
   /** An endpoint that answers 503, as during an outage. */
   down?: 'token' | 'userinfo';
 
@@ -101,6 +104,7 @@ export class MockOidcProvider {
 
     switch (`${req.method} ${url.pathname}`) {
       case 'GET /.well-known/openid-configuration':
+        this.discoveryRequests++;
         return {
           status: 200,
           body: {
@@ -180,7 +184,8 @@ export class MockOidcProvider {
       : [form.get('client_id') ?? '', form.get('client_secret') ?? undefined];
     const method = basic ? 'client_secret_basic' : secret === undefined ? 'none' : 'client_secret_post';
     const publicClient = method === 'none' && id === this.publicClientId;
-    if (!publicClient && (id !== this.clientId || secret !== this.clientSecret)) {
+    const expected = id === this.clientId ? this.clientSecret : this.clients.get(id);
+    if (!publicClient && (expected === undefined || secret !== expected)) {
       return { status: 401, body: { error: 'invalid_client' } };
     }
     this.clientAuthentications.push(method);

@@ -22,8 +22,10 @@ const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
 
 /**
  * Only https, except loopback http (local IdPs and tests). The URLs come from the provider's
- * discovery document or the app's configuration, never from the user: a bad one is a
- * misconfiguration (`unavailable`, a 502), not a failed sign-in.
+ * discovery document or the app's configuration, never from the request: a bad one is a
+ * misconfiguration (`unavailable`, a 502), not a failed sign-in. Nor does this keep a fetch off
+ * the app's own network: an issuer that customers enter themselves is the app's to check
+ * against the providers it supports, before it stores it.
  */
 function assertSecureUrl(value: string | undefined, what: string): string {
   let url: URL;
@@ -39,6 +41,74 @@ function assertSecureUrl(value: string | undefined, what: string): string {
   return url.toString();
 }
 
+/** A request to the provider: no redirects, a 10 s timeout, and a network failure as an outage. */
+async function send(options: OidcClientOptions, url: string, init: RequestInit) {
+  try {
+    return await (options.fetch ?? fetch)(url, { ...init, redirect: 'error', signal: AbortSignal.timeout(10_000) });
+  } catch (error) {
+    throw new OidcError(`${new URL(url).host} is unreachable (${(error as Error).message})`, 'unavailable');
+  }
+}
+
+/**
+ * What the clients of one `OidcService` share: discovery documents, by
+ * issuer, and key sets, by URI. Neither depends on the client id or secret,
+ * so a client made anew for each login (`oidc.providers` as a function)
+ * still fetches them once per TTL, and the key set's cooldown still holds.
+ */
+export class OidcMetadataCache {
+  private readonly documents = new Map<string, { value: Promise<Endpoints>; at: number }>();
+  private readonly keySets = new Map<string, JwksClient>();
+
+  constructor(private readonly options: OidcClientOptions = {}) {}
+
+  /** The discovery document of `issuer`, as published: the endpoints a config overrides are its own to merge. */
+  document(issuer: string): Promise<Endpoints> {
+    const ttl = durationOr(this.options.discoveryTtl, '1h');
+    let cached = this.documents.get(issuer);
+    if (!cached || this.now() - cached.at >= ttl) {
+      const entry = { value: this.discover(issuer), at: this.now() };
+      this.documents.set(issuer, entry);
+      // Retry next time, unless a later fetch has taken its place.
+      entry.value.catch(() => this.documents.get(issuer) === entry && this.documents.delete(issuer));
+      cached = entry;
+    }
+
+    return cached.value;
+  }
+
+  /** The key set at `uri`, an https URL. */
+  jwks(uri: string): JwksClient {
+    let jwks = this.keySets.get(uri);
+    if (!jwks) {
+      jwks = new JwksClient(uri, { ...this.options.jwks, fetch: this.options.fetch, now: this.options.now });
+      this.keySets.set(uri, jwks);
+    }
+
+    return jwks;
+  }
+
+  private async discover(issuer: string): Promise<Endpoints> {
+    const url = `${issuer.replace(/\/$/, '')}/.well-known/openid-configuration`;
+    const response = await send(this.options, assertSecureUrl(url, 'issuer'), { headers: { accept: 'application/json' } });
+    if (!response.ok) {
+      throw new OidcError(`discovery failed (${response.status})`, 'unavailable');
+    }
+
+    const doc = (await response.json().catch(() => ({}))) as Endpoints;
+    // OIDC Discovery §4.3: the document must name exactly the issuer we asked.
+    if (doc.issuer !== issuer) {
+      throw new OidcError('discovery issuer mismatch', 'unavailable');
+    }
+
+    return doc;
+  }
+
+  private now() {
+    return this.options.now?.() ?? Date.now();
+  }
+}
+
 /**
  * One OAuth 2.0 / OpenID Connect provider: authorization code flow with
  * PKCE (S256), `state` and `nonce`.
@@ -49,14 +119,13 @@ function assertSecureUrl(value: string | undefined, what: string): string {
  * userinfo's `sub` matches the ID token's (OIDC Core §5.3.2).
  */
 export class OidcClient {
-  private discovery?: { value: Promise<Endpoints>; at: number };
-  private jwks?: JwksClient;
   readonly kind: 'oidc' | 'oauth2';
 
   constructor(
     readonly name: string,
     private readonly config: OidcProviderConfig,
     private readonly options: OidcClientOptions = {},
+    private readonly metadata = new OidcMetadataCache(options),
   ) {
     this.kind = config.kind ?? 'oidc';
 
@@ -176,14 +245,8 @@ export class OidcClient {
   }
 
   private async verifyIdToken(endpoints: Endpoints, idToken: string, nonce: string): Promise<JwtClaims> {
-    this.jwks ??= new JwksClient(assertSecureUrl(endpoints.jwks_uri, 'jwks_uri'), {
-      ...this.options.jwks,
-      fetch: this.options.fetch,
-      now: this.options.now,
-    });
-
     const verifier = new JwtVerifier({
-      jwks: this.jwks,
+      jwks: this.metadata.jwks(assertSecureUrl(endpoints.jwks_uri, 'jwks_uri')),
       algorithms: this.config.idTokenAlgorithms ?? ['RS256', 'ES256'],
       issuer: endpoints.issuer,
       audience: this.config.clientId,
@@ -282,30 +345,7 @@ export class OidcClient {
       };
     }
 
-    const ttl = durationOr(this.options.discoveryTtl, '1h');
-    if (!this.discovery || this.now() - this.discovery.at >= ttl) {
-      const value = this.discover();
-      this.discovery = { value, at: this.now() };
-      value.catch(() => (this.discovery = undefined)); // retry next time
-    }
-
-    return this.discovery.value;
-  }
-
-  private async discover(): Promise<Endpoints> {
-    const issuer = this.config.issuer!;
-    const url = `${issuer.replace(/\/$/, '')}/.well-known/openid-configuration`;
-    const response = await this.request(assertSecureUrl(url, 'issuer'), { headers: { accept: 'application/json' } });
-    if (!response.ok) {
-      throw new OidcError(`discovery failed (${response.status})`, 'unavailable');
-    }
-
-    const doc = (await response.json().catch(() => ({}))) as Endpoints;
-    // OIDC Discovery §4.3: the document must name exactly the issuer we asked.
-    if (doc.issuer !== issuer) {
-      throw new OidcError('discovery issuer mismatch', 'unavailable');
-    }
-
+    const doc = await this.metadata.document(this.config.issuer!);
     return {
       ...doc,
       authorization_endpoint: assertSecureUrl(this.config.authorizationEndpoint ?? doc.authorization_endpoint, 'authorization_endpoint'),
@@ -333,12 +373,8 @@ export class OidcClient {
     return response.json();
   }
 
-  private async request(url: string, init: RequestInit) {
-    try {
-      return await (this.options.fetch ?? fetch)(url, { ...init, redirect: 'error', signal: AbortSignal.timeout(10_000) });
-    } catch (error) {
-      throw new OidcError(`${new URL(url).host} is unreachable (${(error as Error).message})`, 'unavailable');
-    }
+  private request(url: string, init: RequestInit) {
+    return send(this.options, url, init);
   }
 
   private now() {
