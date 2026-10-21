@@ -205,6 +205,52 @@ describe('MagicLinkService in an HTTP exchange', () => {
     expect(own.cookies).toHaveLength(1);
   });
 
+  describe('consume from a request of another origin', () => {
+    const crossSite = { host: 'app.test', origin: 'https://evil.test', 'sec-fetch-site': 'cross-site' };
+    const sameOrigin = { host: 'app.test', origin: 'https://app.test', 'sec-fetch-site': 'same-origin' };
+
+    it('refuses before it spends the link or changes the transaction cookie, so the same link signs in afterwards', async () => {
+      const { service, inRequest, mailer, tokenOf, cookieHeader, links, seen } = setup();
+      const created = await inRequest({}, () => service.create('ada@example.com'));
+      const token = tokenOf(mailer.sent[0]);
+      const consume = vi.spyOn(links, 'consumeMagicLink');
+      const cookie = cookieHeader(created.cookies[0]);
+
+      const refused = await inRequest({ ...cookie, ...crossSite }, () => service.consume(token));
+
+      expect(refused.error).toEqual(new ForbiddenException('Cross-origin sign-in refused'));
+      expect(refused.cookies).toEqual([]);
+      expect(consume).not.toHaveBeenCalled();
+      expect(seen.filter((event) => event.type === 'magic-link-refused')).toEqual([]);
+
+      const opened = await inRequest({ ...cookie, ...sameOrigin }, () => service.consume(token));
+      expect(opened.value).toMatchObject({ session: { userId: 'u1' } });
+    });
+
+    it('answers the same refusal for a token that is not valid, or from a browser that did not ask, so it tells nothing', async () => {
+      const { service, inRequest, mailer, tokenOf } = setup();
+      await inRequest({}, () => service.create('ada@example.com'));
+
+      const unknown = await inRequest(crossSite, () => service.consume('X'.repeat(43)));
+      const malformed = await inRequest(crossSite, () => service.consume('not a token'));
+
+      expect(unknown.error).toBeInstanceOf(ForbiddenException);
+      expect(malformed.error).toBeInstanceOf(ForbiddenException);
+      // A real link, opened without the cookie of the browser that asked: the origin answers first.
+      const foreign = await inRequest(crossSite, () => service.consume(tokenOf(mailer.sent[0])));
+      expect(foreign.error).toBeInstanceOf(ForbiddenException);
+    });
+
+    it('signs in a request of the app’s own origin', async () => {
+      const { service, inRequest, mailer, tokenOf, cookieHeader } = setup();
+      const created = await inRequest({}, () => service.create('ada@example.com'));
+
+      const opened = await inRequest({ ...cookieHeader(created.cookies[0]), ...sameOrigin }, () => service.consume(tokenOf(mailer.sent[0])));
+
+      expect(opened.value).toMatchObject({ session: { userId: 'u1' } });
+    });
+  });
+
   it('finds nothing for a link read from a log or forwarded, whatever cookie is forged for it', async () => {
     const { service, inRequest, mailer, tokenOf, cookieHeader, seen } = setup();
     const created = await inRequest({}, () => service.create('ada@example.com'));

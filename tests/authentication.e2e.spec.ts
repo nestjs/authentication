@@ -186,12 +186,12 @@ describe.each(adapters.map((a) => a.name))('authentication e2e (%s)', (adapter) 
       }
 
       // A magic link of the attacker's, posted from the attacker's page, signs no one in either:
-      // not without the transaction cookie of the browser that requested it (401), and not with
-      // it (403, from SignInService).
+      // the origin is refused first (403), with the transaction cookie or without it, and the link
+      // and the cookie stay as they were.
       const requested = await http().post('/auth/magic').send({ email: 'bob@example.com' }).expect(202);
       const tokenParam = new URL(outbox.at(-1)!.url).searchParams.get('token')!;
 
-      await http().post('/auth/magic/consume').set('Origin', 'https://evil.test').send({ token: tokenParam }).expect(401);
+      await http().post('/auth/magic/consume').set('Origin', 'https://evil.test').send({ token: tokenParam }).expect(403);
 
       const res = await http()
         .post('/auth/magic/consume')
@@ -199,7 +199,11 @@ describe.each(adapters.map((a) => a.name))('authentication e2e (%s)', (adapter) 
         .set('Cookie', cookieOf(requested, '__Host-magic_link_tx'))
         .send({ token: tokenParam });
       expect(res.status).toBe(403);
-      expect(res.headers['set-cookie']).toEqual(['__Host-magic_link_tx=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax']);
+      expect(res.headers['set-cookie']).toBeUndefined();
+
+      // The same link, from the browser that requested it, still signs in.
+      await http().post('/auth/magic/consume').set('Cookie', cookieOf(requested, '__Host-magic_link_tx')).send({ token: tokenParam }).expect(200);
+
       // Same-origin pages and non-browser clients sign in as before.
       const host = `127.0.0.1:${app.getHttpServer().address().port}`;
       await http().post('/auth/login').set('Origin', `http://${host}`).send(bob).expect(200);

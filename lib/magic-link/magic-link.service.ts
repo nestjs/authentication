@@ -163,13 +163,19 @@ export class MagicLinkService {
    * instead, before anything is looked up or burned: the module answers it
    * with a 401 that tells the customer where to open the link. Each
    * refusal is a `magic-link-refused` event with its reason. Outside an
-   * HTTP handler, pass the `request` that carries the cookie.
+   * HTTP handler, pass the `request` that carries the cookie. A request from
+   * another origin than the app's own and `session.trustedOrigins` gets a
+   * `ForbiddenException` first, as `SignInService.signIn()` does, so the
+   * link and the cookie stay as they were.
    */
   async consume(
     token: string,
     { request }: { request?: MagicLinkRequest } = {},
   ): Promise<(IssuedSession & { redirectTo?: string }) | null> {
     const { handler } = this.feature();
+    // Signing in would refuse this request at the end, after the link is spent and the cookie
+    // settled: refuse it before, whatever the token is.
+    this.signIn.refuseCrossOrigin(this.scope.exchange()?.request);
     if (typeof token !== 'string' || !TOKEN_PATTERN.test(token)) {
       return this.refuse('unknown');
     }
