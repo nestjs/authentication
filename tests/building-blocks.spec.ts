@@ -75,6 +75,63 @@ describe('PasswordHasher (scrypt)', () => {
     expect(current.needsRehash(await current.hash('pw'))).toBe(false);
   });
 
+  type Derive = (input: Buffer, salt: Buffer, keyLength: number, params: { logN: number; r: number; p: number }) => Promise<Buffer>;
+  const spyOnWork = (hasher: PasswordHasher) => {
+    const derive = vi.spyOn(hasher as unknown as { derive: Derive }, 'derive');
+    // N·r·p summed over the derivations since the last call.
+    const work = () => {
+      const sum = derive.mock.calls.reduce((total, [, , , { logN, r, p }]) => total + 2 ** logN * r * p, 0);
+      derive.mockClear();
+      return sum;
+    };
+    return { derive, work };
+  };
+
+  it('tops up the check of a hash stored before the cost was raised to an unknown user’s work, right password or wrong', async () => {
+    const hasher = new PasswordHasher({ logN: 12 });
+    await hasher.verify('pw', undefined); // makes the dummy
+    const { derive, work } = spyOnWork(hasher);
+
+    await hasher.verify('pw', undefined);
+    const unknown = work();
+    expect(unknown).toBe(2 ** 12 * 8);
+
+    const older = await fast.hash('pw'); // ln=10
+    await expect(hasher.verify('wrong', older)).resolves.toBe(false);
+    // Its own check first, then ln=11 and ln=10: 1 + 2 + 1 quarters of the configured work.
+    expect(derive.mock.calls.map(([, , , params]) => params)).toEqual([
+      { logN: 10, r: 8, p: 1 },
+      { logN: 11, r: 8, p: 1 },
+      { logN: 10, r: 8, p: 1 },
+    ]);
+    expect(work()).toBe(unknown);
+    await expect(hasher.verify('pw', older)).resolves.toBe(true);
+    expect(work()).toBe(unknown);
+
+    // Other r and p count by the work they take, not by N alone.
+    for (const options of [{ logN: 11, r: 4 }, { logN: 10, r: 2, p: 3 }]) {
+      const stored = await new PasswordHasher(options).hash('pw');
+      await expect(hasher.verify('wrong', stored)).resolves.toBe(false);
+      expect(work()).toBe(unknown);
+    }
+  });
+
+  it('adds no work for a hash that costs as much or more: another key or salt length, or one stored before the cost was lowered', async () => {
+    const hasher = new PasswordHasher({ logN: 11 });
+    const { derive } = spyOnWork(hasher);
+
+    const sameWork = await new PasswordHasher({ logN: 11, keyLength: 64, saltLength: 32 }).hash('pw');
+    expect(hasher.needsRehash(sameWork)).toBe(true);
+    await expect(hasher.verify('wrong', sameWork)).resolves.toBe(false);
+    expect(derive).toHaveBeenCalledOnce();
+
+    derive.mockClear();
+    const costlier = await new PasswordHasher({ logN: 12 }).hash('pw');
+    await expect(hasher.verify('wrong', costlier)).resolves.toBe(false);
+    // Its own, longer derivation: nothing can make that one shorter.
+    expect(derive.mock.calls.map(([, , , params]) => params)).toEqual([{ logN: 12, r: 8, p: 1 }]);
+  });
+
   it('normalises Unicode (NFKC)', async () => {
     const hash = await fast.hash('café'); // precomposed
     await expect(fast.verify('café', hash)).resolves.toBe(true); // combining accent

@@ -21,6 +21,9 @@ function scrypt(password: Buffer, salt: Buffer, keyLength: number, { logN, r, p 
 
 const b64 = (buf: Buffer) => buf.toString('base64').replace(/=+$/, '');
 
+/** What a derivation costs: N·r·p, since OpenSSL runs the `p` lanes one after another. */
+const work = ({ logN, r, p }: Params) => 2 ** logN * r * p;
+
 /**
  * @internal The bytes `PasswordHasher` derives from: the password NFKC-normalised, as UTF-8. Throws
  * for anything but a string, for an empty one (which no account should have), and past 4 KiB,
@@ -63,7 +66,9 @@ export function isHashablePassword(password: unknown): password is string {
  * The encoded hash is self-describing (`$scrypt$ln=17,r=8,p=1$salt$hash`),
  * so parameters can be raised later: `verify()` reads the parameters from
  * the stored hash and `needsRehash()` tells the sign-in code to store a
- * fresh hash while it has the plaintext.
+ * fresh hash while it has the plaintext. Until then, `verify()` makes up the
+ * work an older, cheaper hash saves, so it answers no sooner than for an
+ * unknown user.
  *
  * Passwords are NFKC-normalised (NIST SP 800-63B §5.1.1.2) so the same
  * password typed on different keyboards verifies. `hash()` refuses an empty
@@ -108,6 +113,11 @@ export class PasswordHasher {
    * is checked instead, so response time does not reveal which accounts
    * exist. The first such call makes the dummy hash, which costs the same
    * one derivation as every later check.
+   *
+   * A hash stored before the cost was raised is cheaper to check than the
+   * dummy, so its check is topped up to the configured work, right password
+   * or wrong. One stored before the cost was lowered takes its longer time
+   * until it is rehashed: that can't be hidden.
    */
   async verify(password: string, encoded: string | null | undefined): Promise<boolean> {
     if (!encoded) {
@@ -139,6 +149,19 @@ export class PasswordHasher {
     }
 
     const actual = await this.derive(input, parsed.salt, parsed.hash.length, parsed.params);
+
+    // A hash stored before the cost was raised takes less work than the dummy, which would tell an
+    // account from an unknown email: make up the difference in N·r·p with derivations at the
+    // configured r and p, halving N each time. Exact when only N changed, within 2·r·p otherwise.
+    let missing = work(this.params) - work(parsed.params);
+    for (let logN = this.params.logN - 1; logN >= 1 && missing > 0; logN--) {
+      const params = { ...this.params, logN };
+      if (work(params) <= missing) {
+        await this.derive(input, parsed.salt, this.keyLength, params);
+        missing -= work(params);
+      }
+    }
+
     return timingSafeEqual(actual, parsed.hash);
   }
 
