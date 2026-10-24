@@ -65,7 +65,10 @@ const TYPES: AuthenticationEvent['type'][] = [
 ];
 
 const links: (MagicLink | PasswordResetLink | EmailVerificationLink)[] = [];
-const totp = (secret: string, offset = 0) => hotp(base32Decode(secret), Math.floor(Date.now() / 30_000) + offset);
+// The app's TOTP clock (`mfa.now`), fixed when the file loads: on the wall clock the 30-second step
+// can turn between making a code and the app checking it, and the previous step's code is then refused.
+const clock = Date.now();
+const totp = (secret: string, offset = 0) => hotp(base32Decode(secret), Math.floor(clock / 30_000) + offset);
 const tokenOf = (link: { url: string }) => new URL(link.url).searchParams.get('token')!;
 const cookieOf = (res: request.Response, name = '__Host-sid') =>
   ([] as string[]).concat(res.headers['set-cookie'] ?? []).find((c) => c.startsWith(`${name}=`))?.split(';')[0];
@@ -289,7 +292,7 @@ class JourneyController {
     AuthenticationModule.forRoot({
       session: { metadata: ({ headers }) => ({ userAgent: headers['user-agent'] ?? null }) },
       password: { logN: 10 },
-      mfa: { encryption: false },
+      mfa: { encryption: false, now: () => clock },
       accessToken: { key: 'audit-test-secret-of-at-least-32-bytes-long' },
       magicLink: { url: 'https://app.test/magic' },
       passwordReset: { url: 'https://app.test/reset-password' },

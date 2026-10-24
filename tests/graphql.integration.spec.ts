@@ -43,7 +43,10 @@ const typeDefs = /* GraphQL */ `
 `;
 
 const verified = new Set(['verified-user']);
-const totp = (secret: string, offset = 0) => hotp(base32Decode(secret), Math.floor(Date.now() / 30_000) + offset);
+// The app's TOTP clock (`mfa.now`), fixed when the file loads: on the wall clock the 30-second step
+// can turn between making a code and the app checking it, and the previous step's code is then refused.
+const clock = Date.now();
+const totp = (secret: string, offset = 0) => hotp(base32Decode(secret), Math.floor(clock / 30_000) + offset);
 
 @Injectable()
 class SessionAuth extends SessionCookieProvider<{ id: string; emailVerified: boolean }> {
@@ -113,7 +116,7 @@ class AccountResolver {
 
 @Module({
   imports: [
-    AuthenticationModule.forRoot({ mfa: { encryption: false } }),
+    AuthenticationModule.forRoot({ mfa: { encryption: false, now: () => clock } }),
     GraphQLModule.forRoot<ApolloDriverConfig>({
       driver: ApolloDriver,
       typeDefs,

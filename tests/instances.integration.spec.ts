@@ -39,7 +39,10 @@ const database = {
   mfa: new InMemoryMfaStore(),
 };
 
-const totp = (secret: string, offset = 0) => hotp(base32Decode(secret), Math.floor(Date.now() / 30_000) + offset);
+// The app's TOTP clock (`mfa.now`), fixed when the file loads: on the wall clock the 30-second step
+// can turn between making a code and the app checking it, and the previous step's code is then refused.
+const clock = Date.now();
+const totp = (secret: string, offset = 0) => hotp(base32Decode(secret), Math.floor(clock / 30_000) + offset);
 const cookieOf = (res: request.Response) =>
   ([] as string[]).concat(res.headers['set-cookie'] ?? []).find((c) => c.startsWith('__Host-sid='))?.split(';')[0];
 
@@ -131,7 +134,7 @@ function deploy(keys: string[]) {
     imports: [
       AuthenticationModule.forRoot({
         accessToken: { key: 'instances-test-secret-of-at-least-32-bytes' },
-        mfa: { encryption: { keys } },
+        mfa: { encryption: { keys }, now: () => clock },
       }),
     ],
     controllers: [AppController],

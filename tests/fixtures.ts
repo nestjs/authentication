@@ -101,6 +101,12 @@ export class AppConfig {
 /** Would come from a secret manager. */
 export const TOTP_KEY = 'totp-encryption-key-at-least-32-characters';
 
+/**
+ * The app's TOTP clock (`mfa.now`), fixed when the spec file loads: on the wall clock the 30-second
+ * step can turn between making a code and the app checking it, and the previous step's code is then refused.
+ */
+export const MFA_CLOCK = Date.now();
+
 export const PASSWORDS: Record<string, string> = {
   'alice@example.com': 'correct horse battery staple',
   'bob@example.com': 'bob-password-123',
@@ -482,7 +488,7 @@ export const authenticationModule = () =>
         metadata: ({ headers }) => ({ userAgent: headers['user-agent'] ?? null }),
       },
       password: { logN: 10 }, // fast for tests; the default is 17
-      mfa: { issuer: 'Nest POC', encryption: { keys: [TOTP_KEY] } },
+      mfa: { issuer: 'Nest POC', encryption: { keys: [TOTP_KEY] }, now: () => MFA_CLOCK },
       magicLink: { url: `${config.issuer}/magic` },
       accessToken: {
         key: config.keys.privateKey, // ES256, from the key

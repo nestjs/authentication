@@ -75,7 +75,10 @@ const migrationsFolder = fileURLToPath(new URL('./fixtures/drizzle', import.meta
 
 const TOTP_KEY = 'database-test-totp-key-of-at-least-32-chars';
 const sha256 = (value: string) => createHash('sha256').update(value).digest('base64url');
-const totp = (secret: string, offset = 0) => hotp(base32Decode(secret), Math.floor(Date.now() / 30_000) + offset);
+// The app's TOTP clock (`mfa.now`), fixed when the file loads: on the wall clock the 30-second step
+// can turn between making a code and the app checking it, and the previous step's code is then refused.
+const clock = Date.now();
+const totp = (secret: string, offset = 0) => hotp(base32Decode(secret), Math.floor(clock / 30_000) + offset);
 
 interface Database {
   providers: Provider[];
@@ -439,7 +442,7 @@ function appModule(database: Database) {
         useFactory: () => ({
           session: { metadata: ({ headers }) => ({ userAgent: headers['user-agent'] ?? null }) },
           password: { logN: 10 },
-          mfa: { issuer: 'DB test', encryption: { keys: [TOTP_KEY] } },
+          mfa: { issuer: 'DB test', encryption: { keys: [TOTP_KEY] }, now: () => clock },
           accessToken: { key: 'database-test-jwt-secret-of-at-least-32-bytes' },
           magicLink: { url: 'https://app.test/magic' },
           passwordReset: { url: 'https://app.test/reset-password' },
@@ -594,7 +597,7 @@ for (const target of targets) {
         await http().post('/mfa/complete').set('Cookie', pending.cookie).send({ code: '000000' }).expect(401);
         expect(await rows('SELECT user_id FROM mfa_failures WHERE user_id = $1', user.id)).toHaveLength(1);
 
-        const step = Math.floor(Date.now() / 30_000);
+        const step = Math.floor(clock / 30_000);
         const code = hotp(base32Decode(secret), step);
         const completed = await http().post('/mfa/complete').set('Cookie', pending.cookie).send({ code }).expect(200);
         const verified = cookieOf(completed, '__Host-sid')!;
