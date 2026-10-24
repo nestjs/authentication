@@ -14,9 +14,9 @@ import {
   type AuthenticationEvent,
 } from '../lib/index.js';
 import { base32Decode, hotp } from '../lib/mfa/otp.util.js';
-import { AppModule, AppConfig, PASSWORDS, UsersRepository, outbox } from './fixtures.js';
+import { AppModule, AppConfig, MFA_CLOCK, PASSWORDS, UsersRepository, outbox } from './fixtures.js';
 
-const totpNow = (secret: string, offset = 0) => hotp(base32Decode(secret), Math.floor(Date.now() / 30_000) + offset);
+const totpNow = (secret: string, offset = 0) => hotp(base32Decode(secret), Math.floor(MFA_CLOCK / 30_000) + offset);
 const cookieOf = (res: request.Response, name = 'sid') =>
   ([] as string[]).concat(res.headers['set-cookie'] ?? []).find((c) => c.startsWith(`${name}=`))!.split(';')[0];
 const claimsOf = (jwt: string) => JSON.parse(Buffer.from(jwt.split('.')[1], 'base64url').toString());
