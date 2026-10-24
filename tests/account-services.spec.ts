@@ -152,6 +152,24 @@ describe('EmailVerificationService', () => {
     await expect(store.consumeEmailToken('reset-1', 'password-reset')).resolves.toMatchObject({ userId: 'u1' });
   });
 
+  it('gives the link back when markVerified() throws, until the time it had', async () => {
+    const { service, mailer, seen } = verificationWith({ ttl: '10m' });
+    await service.send({ id: 'u1', email: 'ada@example.com' });
+    const token = tokenOf(mailer.sent[0].url);
+
+    vi.spyOn(mailer, 'markVerified').mockRejectedValueOnce(new Error('the database is briefly unavailable'));
+    await expect(service.verify(token)).rejects.toThrow('the database is briefly unavailable');
+    expect(seen).toEqual([]);
+    await expect(service.verify(token)).resolves.toEqual({ userId: 'u1', email: 'ada@example.com' });
+
+    const late = verificationWith({ ttl: '10m' });
+    await late.service.send({ id: 'u1', email: 'ada@example.com' });
+    vi.spyOn(late.mailer, 'markVerified').mockRejectedValueOnce(new Error('down'));
+    await expect(late.service.verify(tokenOf(late.mailer.sent[0].url))).rejects.toThrow('down');
+    late.tick(600_000);
+    await expect(late.service.verify(tokenOf(late.mailer.sent[0].url))).resolves.toBeNull();
+  });
+
   it('never takes a password reset token as a verification link', async () => {
     const { service, store, mailer } = verificationWith();
     const token = 'R'.repeat(43);
@@ -328,6 +346,68 @@ describe('PasswordResetService', () => {
 
     // The refusals did not burn the link.
     await expect(service.reset(token, 'new password')).resolves.toEqual({ userId: 'u1' });
+  });
+
+  it('gives the link back when a step fails before the new password is stored, so the same link works again', async () => {
+    const failures: [string, (setup: ReturnType<typeof resetWith>) => void][] = [
+      ['findUser()', ({ accounts }) => vi.spyOn(accounts, 'findUser').mockRejectedValueOnce(new Error('findUser() failed'))],
+      ['hash()', ({ hasher }) => vi.spyOn(hasher, 'hash').mockRejectedValueOnce(new Error('hash() failed'))],
+      ['ending sign-ins', ({ sessions }) => vi.spyOn(sessions, 'revokeAll').mockRejectedValueOnce(new Error('ending sign-ins failed'))],
+      [
+        'updatePassword()',
+        ({ accounts }) =>
+          vi.spyOn(accounts, 'updatePassword').mockImplementationOnce(() => {
+            throw new Error('updatePassword() failed');
+          }),
+      ],
+    ];
+    for (const [step, fail] of failures) {
+      const setup = resetWith();
+      const { service, accounts, hasher, seen, linkFor } = setup;
+      accounts.rows.set('u1', { id: 'u1', email: 'ada@example.com', passwordHash: 'h' });
+      const token = await linkFor('ada@example.com');
+
+      fail(setup);
+      await expect(service.reset(token, 'new password'), step).rejects.toThrow(`${step} failed`);
+      expect(accounts.rows.get('u1')!.passwordHash, step).toBe('h');
+      expect(seen.filter((event) => event.type === 'password-reset'), step).toEqual([]);
+
+      await expect(service.reset(token, 'new password'), step).resolves.toEqual({ userId: 'u1' });
+      await expect(hasher.verify('new password', accounts.rows.get('u1')!.passwordHash!), step).resolves.toBe(true);
+      await expect(service.reset(token, 'another password'), step).resolves.toBeNull(); // and then, once only
+    }
+  });
+
+  it('a link given back sets nothing once updatePassword() stored the hash before it threw', async () => {
+    const { service, accounts, hasher, linkFor } = resetWith();
+    accounts.rows.set('u1', { id: 'u1', email: 'ada@example.com', passwordHash: 'h' });
+    const token = await linkFor('ada@example.com');
+
+    vi.spyOn(accounts, 'updatePassword').mockImplementationOnce((userId, passwordHash) => {
+      accounts.rows.get(userId)!.passwordHash = passwordHash;
+      throw new Error('the connection dropped after the commit');
+    });
+    await expect(service.reset(token, 'new password')).rejects.toThrow('the connection dropped after the commit');
+    // The fingerprint of the password it replaces no longer matches.
+    await expect(service.reset(token, 'another password')).resolves.toBeNull();
+    await expect(hasher.verify('new password', accounts.rows.get('u1')!.passwordHash!)).resolves.toBe(true);
+  });
+
+  it('throws the step’s error, and logs, when the link cannot be given back either', async () => {
+    const { service, accounts, emailTokens, linkFor } = resetWith();
+    const logged = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    try {
+      accounts.rows.set('u1', { id: 'u1', email: 'ada@example.com', passwordHash: 'h' });
+      const token = await linkFor('ada@example.com');
+
+      vi.spyOn(accounts, 'findUser').mockRejectedValueOnce(new Error('findUser() failed'));
+      vi.spyOn(emailTokens, 'saveEmailToken').mockRejectedValueOnce(new Error('the store is down too'));
+      await expect(service.reset(token, 'new password')).rejects.toThrow('findUser() failed');
+      expect(logged).toHaveBeenCalledWith('Could not give back a password reset link', expect.stringContaining('the store is down too'));
+      await expect(service.reset(token, 'new password')).resolves.toBeNull(); // spent, as before
+    } finally {
+      logged.mockRestore();
+    }
   });
 
   it('never takes a verification link as a reset link', async () => {

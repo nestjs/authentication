@@ -39,7 +39,9 @@ export interface EmailTokenStore {
   /**
    * Saves a new token (a fresh random id: a plain insert), then keeps the
    * store bounded: deletes tokens whose `expiresAt` is at or before this
-   * one's `createdAt`, and past a cap, those that expire first.
+   * one's `createdAt`, and past a cap, those that expire first. The services
+   * also save back a record `consumeEmailToken()` just returned, when a step
+   * after it failed: its id is free again, so that is a plain insert too.
    */
   saveEmailToken(record: EmailTokenRecord): Promise<void>;
   /**
