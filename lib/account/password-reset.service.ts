@@ -17,6 +17,7 @@ import type {
   ResetPasswordOptions,
   PasswordResetResult,
 } from '../interfaces/password-reset.interface.js';
+import type { EmailTokenRecord } from '../interfaces/email-token-store.interface.js';
 import { isMailableEmail, normalizeEmail } from './email.util.js';
 import { PasswordResetHandler } from './password-reset.handler.js';
 
@@ -100,7 +101,9 @@ export class PasswordResetService implements OnModuleDestroy {
    * another origin than the app's own and `session.trustedOrigins` gets a
    * `ForbiddenException` first, as `SignInService.signIn()` does, so the link
    * and the password stay as they were. Without `signIn`, the origin is not
-   * checked.
+   * checked. When a step throws before the new password is stored (the
+   * lookup, the hash, ending sign-ins, `updatePassword()`), the link works
+   * again until it expires, and the error is rethrown.
    */
   async reset(token: string, password: string, { signIn = false }: ResetPasswordOptions = {}): Promise<PasswordResetResult | null> {
     const { handler } = this.feature();
@@ -117,23 +120,23 @@ export class PasswordResetService implements OnModuleDestroy {
     if (!record || hasExpired(record.expiresAt, this.now())) {
       return null;
     }
-    const found = await handler.findUser(normalizeEmail(record.email));
-    const account = found && checked(found);
-    if (
-      !account ||
-      account.id !== record.userId ||
-      account.email !== record.email ||
-      !safeEqual(fingerprint(account.passwordHash), record.fingerprint ?? '')
-    ) {
+    let account: PasswordResetAccount | null;
+    try {
+      account = await this.setPassword(handler, record, password);
+    } catch (error) {
+      // A step failed before the new password was stored, as far as this request can tell: give the
+      // link back, so the customer can try it again rather than ask for another email. Safe even if
+      // updatePassword() stored the hash and then threw: the link is bound to the fingerprint of the
+      // password it replaces, so once that changed, it sets nothing.
+      await this.storage.emailTokens.saveEmailToken(record).catch((saveError: unknown) =>
+        PasswordResetService.logger.error('Could not give back a password reset link', saveError instanceof Error ? saveError.stack : saveError),
+      );
+      throw error;
+    }
+    if (!account) {
       return null;
     }
 
-    const passwordHash = await this.hasher.hash(password);
-    // Sign-ins end before the new password is stored, so a store that fails leaves the old password
-    // without its sessions rather than the new one next to them; and again after, for any sign-in
-    // that started in between.
-    await this.revokeSignIns(account.id);
-    await handler.updatePassword(account.id, passwordHash);
     await this.storage.emailTokens.deleteUserEmailTokens(account.id, 'password-reset');
     await this.revokeSignIns(account.id);
     // The link reached the address, and the password is the owner's now.
@@ -176,6 +179,31 @@ export class PasswordResetService implements OnModuleDestroy {
     const url = new URL(options.url);
     url.searchParams.set('token', token);
     await handler.send({ userId: account.id, email: account.email, url: url.toString(), expiresAt });
+  }
+
+  /**
+   * Checks the link's account and stores the new password's hash. `null` for an account that is gone
+   * or changed its address or password since the link was sent.
+   */
+  private async setPassword(handler: PasswordResetHandler, record: EmailTokenRecord, password: string): Promise<PasswordResetAccount | null> {
+    const found = await handler.findUser(normalizeEmail(record.email));
+    const account = found && checked(found);
+    if (
+      !account ||
+      account.id !== record.userId ||
+      account.email !== record.email ||
+      !safeEqual(fingerprint(account.passwordHash), record.fingerprint ?? '')
+    ) {
+      return null;
+    }
+
+    const passwordHash = await this.hasher.hash(password);
+    // Sign-ins end before the new password is stored, so a store that fails leaves the old password
+    // without its sessions rather than the new one next to them; and again after, for any sign-in
+    // that started in between.
+    await this.revokeSignIns(account.id);
+    await handler.updatePassword(account.id, passwordHash);
+    return account;
   }
 
   /** Ends every session and refresh-token family (with refresh tokens on) of the user. */

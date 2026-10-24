@@ -626,6 +626,9 @@ export function authenticationStoreContract(
 
     same(await store.consumeEmailToken(reset.id, 'email-verification'), undefined, 'a token of another purpose is refused');
     same(await store.consumeEmailToken(reset.id, 'password-reset'), reset, '…and left in place');
+    // What the services do when a step after the consume fails.
+    await store.saveEmailToken(reset);
+    same(await store.consumeEmailToken(reset.id, 'password-reset'), reset, 'a consumed token can be saved back, and works once more');
 
     const second = emailToken({ userId: u1 });
     await store.saveEmailToken(second);

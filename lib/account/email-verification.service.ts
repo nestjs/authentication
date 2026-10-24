@@ -1,4 +1,4 @@
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { AuthenticationRegistry } from '../services/authentication-registry.service.js';
 import { AuthenticationStorage } from '../storage/authentication.storage.js';
 import { AUTHENTICATION_MODULE_OPTIONS } from '../authentication.constants.js';
@@ -19,6 +19,7 @@ import { EmailVerificationHandler } from './email-verification.handler.js';
  */
 @Injectable()
 export class EmailVerificationService {
+  private static readonly logger = new Logger('EmailVerificationService');
   private readonly options?: EmailVerificationOptions;
   private readonly ttl: number;
 
@@ -72,7 +73,8 @@ export class EmailVerificationService {
    * Burns the token and asks `EmailVerificationHandler.markVerified()` to
    * record the address, if it is still the user's. Resolves the verified
    * address, or `null` for unknown, used or expired tokens and for an
-   * address the user has since changed.
+   * address the user has since changed. When `markVerified()` throws, the
+   * link works again until it expires, and the error is rethrown.
    */
   async verify(token: string): Promise<{ userId: string; email: string } | null> {
     const { handler } = this.feature();
@@ -84,7 +86,18 @@ export class EmailVerificationService {
     if (!record || hasExpired(record.expiresAt, this.now())) {
       return null;
     }
-    if (!(await handler.markVerified(record.userId, record.email))) {
+    let verified: boolean;
+    try {
+      verified = await handler.markVerified(record.userId, record.email);
+    } catch (error) {
+      // Give the link back, so the user can try it again rather than ask for another email. Marking
+      // an address verified twice changes nothing, and one the user changed since gets `false`.
+      await this.storage.emailTokens.saveEmailToken(record).catch((saveError: unknown) =>
+        EmailVerificationService.logger.error('Could not give back an email verification link', saveError instanceof Error ? saveError.stack : saveError),
+      );
+      throw error;
+    }
+    if (!verified) {
       return null;
     }
 
