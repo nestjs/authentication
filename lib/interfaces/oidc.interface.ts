@@ -51,7 +51,29 @@ export interface OidcOptions extends OidcClientOptions {
    * domain where it started.
    */
   callbackUrl: string | ((request: OidcRequest) => string | Promise<string>);
-  providers: Record<string, OidcProviderConfig>;
+  /**
+   * The providers users can sign in with, by name: the `:provider` of your
+   * routes, and the `provider` of each profile they sign in with.
+   *
+   * Providers that aren't known at startup (one OIDC client per customer,
+   * created at runtime) come from a function of the name instead, called on
+   * the login and again on the callback: return the provider's config, or
+   * `undefined` (or `null`) for a name you don't serve, which answers 404.
+   * A rotated secret is used from the next call on. Each config it returns
+   * gets the checks the object form gets at startup. Caching your lookup is
+   * yours to do; discovery documents and key sets are cached by issuer and
+   * by URI, whatever the name.
+   *
+   * Identities are linked by (provider, subject), so a name must stand for
+   * one client of one provider: put the customer in the name (`acme`),
+   * rather than reusing one name for every customer's own provider. A
+   * provider a customer brings vouches for whatever addresses it likes, as
+   * verified ones too: link by email only to that customer's accounts, and
+   * check an issuer they enter against the providers you support.
+   */
+  providers:
+    | Record<string, OidcProviderConfig>
+    | ((name: string) => OidcProviderConfig | null | undefined | Promise<OidcProviderConfig | null | undefined>);
   /** Where to land after sign-in when the login had no `redirectTo`. Default `/`. */
   redirectAfterLogin?: string;
   /** Lifetime of a login between the redirect to the provider and the callback. Default `'10m'`. */

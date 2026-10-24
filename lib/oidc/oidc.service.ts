@@ -24,7 +24,7 @@ import type { OidcTransaction } from '../interfaces/oidc.interface.js';
 import { OidcError } from '../errors/oidc.error.js';
 import type { OidcProviderConfig } from '../interfaces/oidc-provider.interface.js';
 import type { OidcOptions, OidcRequest, OidcRedirect, OidcStartOptions } from '../interfaces/oidc.interface.js';
-import { OidcClient } from './oidc.client.js';
+import { OidcClient, OidcMetadataCache } from './oidc.client.js';
 import { OidcAccountResolver } from './oidc-account.resolver.js';
 
 type Headers = Record<string, string | string[] | undefined>;
@@ -76,7 +76,7 @@ const header = (headers: Headers, name: string) => {
  */
 @Injectable()
 export class OidcService {
-  private readonly clients = new Map<string, OidcClient>();
+  private readonly metadata: OidcMetadataCache;
   private readonly options?: OidcOptions;
   private readonly transactionTtl: number;
   private readonly txCookieName: string;
@@ -95,27 +95,14 @@ export class OidcService {
       if (typeof this.options.callbackUrl !== 'function') {
         assertCallbackUrl(this.options.callbackUrl);
       }
-      assertProviderCredentials(this.options.providers);
+      if (typeof this.options.providers !== 'function') {
+        assertProviderCredentials(this.options.providers);
+      }
     }
 
+    this.metadata = new OidcMetadataCache(this.options);
     this.transactionTtl = durationOr(this.options?.transactionTtl, '10m');
     this.txCookieName = defaultCookieName('oidc_tx', this.options?.cookie);
-  }
-
-  client(name: string): OidcClient {
-    const { options } = this.feature();
-    const config = Object.hasOwn(options.providers, name) ? options.providers[name] : undefined;
-    if (!config) {
-      throw new NotFoundException();
-    }
-
-    let client = this.clients.get(name);
-    if (!client) {
-      client = new OidcClient(name, config, options);
-      this.clients.set(name, client);
-    }
-
-    return client;
   }
 
   /**
@@ -141,7 +128,8 @@ export class OidcService {
       linking = { userId: session.userId, sessionId: session.id };
     }
 
-    const { url, transaction, binding } = await this.client(provider)
+    const client = await this.client(provider);
+    const { url, transaction, binding } = await client
       .authorizationRequest(await this.callbackUrl(provider, req), safeRedirectPath(redirectTo), this.transactionTtl)
       .catch(toHttp);
     await this.storage.oidcStates.saveOidcState({ ...transaction, ...(linking && { link: linking }) });
@@ -175,7 +163,8 @@ export class OidcService {
     // Asked again rather than stored with the login: the cookie keeps the callback on the login's host,
     // and a function that answers otherwise gets the code refused by the provider, not accepted.
     const callbackUrl = await this.callbackUrl(provider, req);
-    const result = await this.client(provider).callback(query, transaction, callbackUrl).catch(toHttp);
+    const client = await this.client(provider);
+    const result = await client.callback(query, transaction, callbackUrl).catch(toHttp);
 
     const location = transaction.redirectTo ?? options.redirectAfterLogin ?? '/';
     if (transaction.link) {
@@ -234,6 +223,30 @@ export class OidcService {
     return session && session.mfa !== 'pending' ? session : null;
   }
 
+  /**
+   * The client of the provider named `name`, made for this call from its
+   * config: a secret the `oidc.providers` function rotates is the one the
+   * next call uses. 404 for a provider that isn't configured, or that the
+   * function doesn't serve.
+   */
+  private async client(name: string): Promise<OidcClient> {
+    const { providers } = this.feature().options;
+    let config: OidcProviderConfig | null | undefined;
+    if (typeof providers === 'function') {
+      config = await providers(name);
+      if (config) {
+        assertResolvedCredentials(name, config);
+      }
+    } else {
+      config = Object.hasOwn(providers, name) ? providers[name] : undefined;
+    }
+
+    if (!config) {
+      throw new NotFoundException();
+    }
+    return new OidcClient(name, config, this.options, this.metadata);
+  }
+
   /** `oidc.callbackUrl` for this request, with the provider's name in it. */
   private async callbackUrl(provider: string, request: OidcRequest) {
     const { callbackUrl } = this.feature().options;
@@ -273,6 +286,11 @@ function assertCallbackUrl(value: unknown, must = '`oidc.callbackUrl` must be') 
   }
 }
 
+const CREDENTIALS = {
+  clientId: 'the client id the provider issued',
+  clientSecret: "the client secret the provider issued; a public client sets `tokenEndpointAuthMethod: 'none'` instead",
+};
+
 /**
  * `oidc.providers.<name>.clientId`, and `clientSecret` unless the provider
  * is a public client (`tokenEndpointAuthMethod: 'none'`), checked at
@@ -280,14 +298,22 @@ function assertCallbackUrl(value: unknown, must = '`oidc.callbackUrl` must be') 
  * confidential client into a public one, and fail at the token exchange.
  */
 function assertProviderCredentials(providers: Record<string, OidcProviderConfig> | undefined) {
-  requireOption(providers, 'oidc.providers', 'the providers users can sign in with, by name');
+  requireOption(providers, 'oidc.providers', 'the providers users can sign in with, by name, or a function of the name');
   for (const [name, config] of Object.entries(providers!)) {
-    requireOption(config?.clientId, `oidc.providers.${name}.clientId`, 'the client id the provider issued');
+    requireOption(config?.clientId, `oidc.providers.${name}.clientId`, CREDENTIALS.clientId);
     if (config.tokenEndpointAuthMethod !== 'none') {
-      requireOption(
-        config.clientSecret,
-        `oidc.providers.${name}.clientSecret`,
-        "the client secret the provider issued; a public client sets `tokenEndpointAuthMethod: 'none'` instead",
+      requireOption(config.clientSecret, `oidc.providers.${name}.clientSecret`, CREDENTIALS.clientSecret);
+    }
+  }
+}
+
+/** The same checks, on each config the `oidc.providers` function returns. */
+function assertResolvedCredentials(name: string, config: OidcProviderConfig) {
+  for (const key of ['clientId', 'clientSecret'] as const) {
+    if (!config[key] && (key === 'clientId' || config.tokenEndpointAuthMethod !== 'none')) {
+      throw new Error(
+        `OidcService: the \`oidc.providers\` function returned the provider '${name}' without its \`${key}\` ` +
+          `(${CREDENTIALS[key]}).`,
       );
     }
   }
