@@ -1,6 +1,6 @@
 {
   "name": "@nestjs/authentication",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Nest - modern, fast, powerful node.js web framework (@authentication)",
   "author": "Kamil Mysliwiec",
   "license": "MIT",
