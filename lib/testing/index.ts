@@ -178,17 +178,15 @@ export function authenticationStoreContract(
       const behind = new SessionService(storage, { session: { ...options, now: () => clock - 2_000 } });
       const ahead = new SessionService(storage, { session: { ...options, now: () => clock } });
 
-      for (let round = 0; round < 3; round++) {
-        const { token } = await ahead.create(uid());
-        clock += 61_000; // idle for 61 s on `ahead`, 59 s on `behind`
-        const [seenIdle, touched] = await Promise.all([ahead.validate(token), behind.validate(token)]);
-        same(seenIdle, null, 'the request that saw the session idle is refused');
-        assert.ok(touched, 'the other instance, within the idle timeout, touches the session');
-        clock += 1_000;
-        assert.ok(await ahead.validate(token), 'the touched session is still there');
-      }
+      const { token } = await ahead.create(uid());
+      clock += 61_000; // idle for 61 s on `ahead`, 59 s on `behind`
+      // One after the other: run together, `behind` may read and touch first, and then `ahead` rightly
+      // finds the session alive. In this order, a `validate()` that deleted what it saw idle fails below.
+      same(await ahead.validate(token), null, 'the request that saw the session idle is refused');
+      assert.ok(await behind.validate(token), 'the other instance, within the idle timeout, touches the session');
+      clock += 1_000;
+      assert.ok(await ahead.validate(token), 'the touched session is still there');
     },
-    concurrent,
   );
 
   add(
