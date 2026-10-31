@@ -55,6 +55,18 @@ class JoiningSessionStore extends InMemorySessionStore {
   }
 }
 
+/** A pooled store whose first read comes back last, as on a busy connection. */
+class SlowFirstReadSessionStore extends InMemorySessionStore {
+  private slowed = false;
+  override async getSession(id: string) {
+    if (!this.slowed) {
+      this.slowed = true;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return super.getSession(id);
+  }
+}
+
 /** `UPDATE sessions SET last_active_at = ?` without `AND last_active_at < ?`. */
 class BackwardsTouchSessionStore extends InMemorySessionStore {
   override async touchSession(id: string, lastActiveAt: Date) {
@@ -141,6 +153,10 @@ describe('the contract suite catches stores that are wrong without concurrency',
 describe('authenticationStoreContract()', () => {
   it('passes a store whose getSession() sets `extra`, which is read, not stored', async () => {
     expect(await failures(() => ({ sessions: new JoiningSessionStore() }), { contracts: ['sessions'], concurrent: true })).toEqual({});
+  });
+
+  it('passes a store whose reads finish out of order (#70)', async () => {
+    expect(await failures(() => ({ sessions: new SlowFirstReadSessionStore() }), { contracts: ['sessions'], concurrent: true })).toEqual({});
   });
 
   it('refuses a maxPending that is not a positive integer', () => {
