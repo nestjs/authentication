@@ -49,13 +49,15 @@ export function refusalOf(error: AuthenticationError): Refusal {
  * for `AuthenticationError`s thrown by handlers: the error each transport's
  * exception filter understands, for the refusal's status.
  *
- * - HTTP and GraphQL: Nest's own `UnauthorizedException` (or
+ * - HTTP, GraphQL and MCP: Nest's own `UnauthorizedException` (or
  *   `ForbiddenException` for a 403, `ConflictException` for a 409), with
  *   Nest's own body: `{"message":"Unauthorized","statusCode":401}`, or with a
  *   message, `{"message":"Refresh token reused","error":"Unauthorized","statusCode":401}`.
  *   A `code` is Nest's `errorCode` (on the exception, and in the body), and
  *   the description in `error` when there is a message; `details` follow.
  *   Over HTTP, `challenge` becomes the `WWW-Authenticate` header of a 401.
+ *   `@nestjs/mcp` answers a tool call's exception with a tool error carrying
+ *   its message, and a resource's or prompt's with a JSON-RPC error.
  * - ws and rpc: a `WsException` / `RpcException` carrying
  *   `{ statusCode, message }` (plus `status: 'error'` for ws, and `error`,
  *   `errorCode` and `details` as above). Those filters report
@@ -98,6 +100,12 @@ export async function refusal(
       if (challenge && status === 401) {
         adapterHost?.httpAdapter?.setHeader(context.switchToHttp().getResponse(), 'WWW-Authenticate', challenge);
       }
+      break;
+    case 'mcp':
+      // Nest's own exception, as for HTTP, which `@nestjs/mcp` answers with: a tool result with `isError: true` and
+      // the message, for a tool; a JSON-RPC error with the message and the status, for a resource or a prompt. The
+      // MCP SDK writes the HTTP response, so no challenge goes with it: an MCP client learns where to sign in from
+      // the endpoint's own 401 (`@nestjs/mcp`'s `auth` option).
       break;
   }
 
