@@ -53,8 +53,11 @@ export class AuthenticationScope {
   }
 
   /**
-   * The HTTP request and response of the current call: an HTTP handler, or
-   * a GraphQL resolver whose context carries `req` (and `res`).
+   * The HTTP request and response of the current call: an HTTP handler, a
+   * GraphQL resolver whose context carries `req` (and `res`), or an
+   * `@nestjs/mcp` call that arrived over HTTP (its context, the second of
+   * its arguments, carries `request`). An MCP call has no response of its own
+   * to set cookies on: the MCP SDK writes the HTTP response.
    */
   exchange(): HttpExchange | undefined {
     const context = this.current?.context;
@@ -67,6 +70,10 @@ export class AuthenticationScope {
       case 'graphql': {
         const gql = context!.getArgByIndex(2);
         return gql?.req ? { request: gql.req, response: gql.res } : undefined;
+      }
+      case 'mcp': {
+        const request = context!.getArgByIndex(1)?.request;
+        return request?.headers ? { request } : undefined;
       }
       default:
         return undefined;

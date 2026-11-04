@@ -18,7 +18,7 @@
 
 ## Description
 
-Authentication module for [Nest](https://github.com/nestjs/nest): a global guard with `@Public()` and `@Authenticate()`, credential providers as ordinary injectable classes (bearer JWT, cookie sessions, your own), server-side sessions with rotation, refresh tokens, TOTP second factor, magic links, OIDC sign-in, email verification and password reset, across HTTP, GraphQL, WebSockets and microservices, with no third-party dependencies.
+Authentication module for [Nest](https://github.com/nestjs/nest): a global guard with `@Public()` and `@Authenticate()`, credential providers as ordinary injectable classes (bearer JWT, cookie sessions, your own), server-side sessions with rotation, refresh tokens, TOTP second factor, magic links, OIDC sign-in, email verification and password reset, across HTTP, GraphQL, WebSockets, microservices and MCP tool calls (`@nestjs/mcp`), with no third-party dependencies.
 
 ## Installation
 

@@ -39,11 +39,27 @@ function callKeys(context: ExecutionContext): object[] {
 }
 
 /**
+ * The context of an `@nestjs/mcp` call (a tool, resource or prompt), read from
+ * its arguments, `[input, context]`, so this package needs no `@nestjs/mcp`
+ * dependency. Its `request` is the HTTP platform's request (a plain
+ * `{ method, url, headers }` object for `@nestjs/mcp/testing`'s in-memory
+ * client), absent over stdio.
+ */
+function mcpCallOf(context: ExecutionContext): { request?: Record<PropertyKey, any> } | undefined {
+  const call = context.getArgByIndex(1);
+  return typeof call === 'object' && call !== null ? call : undefined;
+}
+
+/**
  * The object that carries the result for one call, mirrored as `user` /
  * `session` where Passport-era code and `@nestjs/authorization` look:
  * the request (http), the client socket (ws), the transport context (rpc),
  * `context.req` (graphql; over graphql-ws, the socket's upgrade request, which
- * every operation of the socket shares).
+ * every operation of the socket shares), and for an MCP call (`mcp`) the HTTP
+ * request it arrived in, else (over stdio) its own context object. Each MCP
+ * request travels in an HTTP request of its own, so the request is per call,
+ * and it is the one the endpoint's route was authenticated on: a guard there
+ * and on the call authenticate once.
  */
 function carrierOf(context: ExecutionContext): Record<PropertyKey, any> | undefined {
   switch (context.getType<string>()) {
@@ -57,6 +73,10 @@ function carrierOf(context: ExecutionContext): Record<PropertyKey, any> | undefi
     }
     case 'graphql':
       return context.getArgByIndex(2)?.req;
+    case 'mcp': {
+      const call = mcpCallOf(context);
+      return call?.request ?? call;
+    }
     default:
       return undefined;
   }
@@ -203,6 +223,8 @@ function stateCarrierOf(context: ExecutionContext): Record<PropertyKey, any> | u
  *   (`WsAuthenticator.authenticateConnection()` stores the upgrade request
  *   there for the `ws` library)
  * - `graphql`: `context.req.headers`
+ * - `mcp`: the headers of the HTTP request the call arrived in; `undefined`
+ *   over stdio, where the MCP spec takes credentials from the environment
  * - `rpc`: `undefined`; metadata is transport specific
  */
 export function getRequestHeaders(context: ExecutionContext): Headers | undefined {
@@ -211,8 +233,9 @@ export function getRequestHeaders(context: ExecutionContext): Headers | undefine
 
 /**
  * The request behind a call, as far as authentication needs it: headers,
- * and the method for HTTP and GraphQL (a WebSocket handshake has none, so
- * it counts as a safe request). `undefined` for RPC.
+ * and the method for HTTP, GraphQL and MCP (a WebSocket handshake has none,
+ * so it counts as a safe request). `undefined` for RPC, and for MCP over
+ * stdio.
  */
 export function requestOf(context: ExecutionContext): { headers: Headers; method?: string } | undefined {
   switch (context.getType<string>()) {
@@ -225,6 +248,10 @@ export function requestOf(context: ExecutionContext): { headers: Headers; method
     }
     case 'graphql':
       return context.getArgByIndex(2)?.req;
+    case 'mcp': {
+      const request = mcpCallOf(context)?.request;
+      return request?.headers ? (request as { headers: Headers; method?: string }) : undefined;
+    }
     default:
       return undefined;
   }
