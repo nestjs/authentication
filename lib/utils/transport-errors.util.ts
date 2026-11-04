@@ -107,6 +107,10 @@ export async function refusal(
       // MCP SDK writes the HTTP response, so no challenge goes with it: an MCP client learns where to sign in from
       // the endpoint's own 401 (`@nestjs/mcp`'s `auth` option).
       break;
+    case 'ai':
+      // Nest's own exception too, which `@nestjs/ai` gives the model as the function's error. The route that runs
+      // the agent owns the HTTP response, so no challenge goes with it.
+      break;
   }
 
   const Exception = status === 409 ? ConflictException : status === 403 ? ForbiddenException : UnauthorizedException;
