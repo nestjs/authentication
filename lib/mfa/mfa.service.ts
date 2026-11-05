@@ -278,7 +278,9 @@ export class MfaService {
     const issuer = this.options?.issuer ?? 'NestJS';
     const label = `${encodeURIComponent(issuer)}:${encodeURIComponent(accountName)}`;
     const params = new URLSearchParams({ secret, issuer, algorithm: 'SHA1', digits: String(DIGITS), period: String(PERIOD) });
-    return `otpauth://totp/${label}?${params}`;
+    // The key URI format encodes as RFC 3986, where `+` is a plus sign: a space is `%20`, as in the label.
+    // URLSearchParams writes a space as `+`, and a literal `+` as `%2B`, so each `+` left is a space.
+    return `otpauth://totp/${label}?${params.toString().replaceAll('+', '%20')}`;
   }
 
   /** `opened` is undefined when the secret could not be decrypted: fail closed, not counted against the user. */

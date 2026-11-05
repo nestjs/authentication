@@ -329,6 +329,18 @@ describe('TOTP', () => {
     await expect(mfa.verifyTotp('u1', code(secret))).resolves.toBe(true);
   });
 
+  it('percent-encodes spaces in the key URI issuer parameter, as in its label', () => {
+    const mfa = new MfaService(storageWith({ mfa: new InMemoryMfaStore() }), { mfa: { encryption: false, issuer: 'Acme Co' } });
+    const uri = mfa.keyUri('JBSWY3DPEHPK3PXP', 'jane doe@example.com');
+
+    // RFC 3986 (the key URI format's encoding) reads `+` as a plus sign, not a space.
+    const issuer = /[?&]issuer=([^&]*)/.exec(uri)![1];
+    expect(decodeURIComponent(issuer)).toBe('Acme Co');
+    expect(uri).toBe(
+      'otpauth://totp/Acme%20Co:jane%20doe%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=Acme%20Co&algorithm=SHA1&digits=6&period=30',
+    );
+  });
+
   it('refuses at startup the limits that a missing environment variable would switch off', () => {
     const configure = (options: object) => () =>
       new MfaService(storageWith({ mfa: new InMemoryMfaStore() }), { mfa: { encryption: false, ...options } });

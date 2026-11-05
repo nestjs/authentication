@@ -341,7 +341,7 @@ describe.each(adapters.map((a) => a.name))('authentication e2e (%s)', (adapter) 
       expect(stored).toMatch(/^v1\.[\w-]{8}\./); // encrypted at rest, under the key's derived id
       expect(stored).not.toContain(secret);
       expect(enrolled.body.uri).toBe(
-        `otpauth://totp/Nest%20POC:alice%40example.com?secret=${secret}&issuer=Nest+POC&algorithm=SHA1&digits=6&period=30`,
+        `otpauth://totp/Nest%20POC:alice%40example.com?secret=${secret}&issuer=Nest%20POC&algorithm=SHA1&digits=6&period=30`,
       );
 
       await http().get('/me/sensitive').set('Cookie', cookie).expect(401); // no second factor yet
