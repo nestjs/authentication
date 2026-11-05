@@ -1,7 +1,22 @@
 {
   "name": "@nestjs/authentication",
   "version": "0.1.4",
-  "description": "Nest - modern, fast, powerful node.js web framework (@authentication)",
+  "description": "Authentication for NestJS: sign-in with passwords, Google and magic links, server-side sessions, JWT bearer tokens, two-factor and API keys.",
+  "keywords": [
+    "nestjs",
+    "nest",
+    "authentication",
+    "auth",
+    "login",
+    "sign-in",
+    "session",
+    "jwt",
+    "oauth",
+    "magic-link",
+    "two-factor",
+    "2fa",
+    "api-keys"
+  ],
   "author": "Kamil Mysliwiec",
   "license": "MIT",
   "url": "https://github.com/nestjs/authentication#readme",
