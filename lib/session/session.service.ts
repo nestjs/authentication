@@ -15,6 +15,13 @@ import { assertCookieAttributes, defaultCookieName, readCookie, serializeCookie 
 type RequestHeaders = Record<string, string | string[] | undefined>;
 
 /**
+ * The rounds of deletes `revokeAll()` makes before it gives up. A round past the first takes a
+ * rotation that won during the one before; more than a few take a store that keeps listing what it
+ * deleted.
+ */
+const REVOKE_ROUNDS = 5;
+
+/**
  * Server-side sessions: opaque 256-bit tokens in an `HttpOnly` cookie,
  * stored by their SHA-256.
  *
@@ -132,8 +139,9 @@ export class SessionService {
    * `absoluteTtl` from its creation, in place of its `mfa.pendingTtl`.
    * Resolves `null` when the session was gone by the time it was replaced:
    * revoked (a sign-out everywhere, a password reset) or rotated by another
-   * request, which leaves no new session behind. The session's `extra` is
-   * not carried over.
+   * request, which leaves no new session behind. A rotation that wins while
+   * `revokeAll()` is under way still resolves its new session, which that
+   * `revokeAll()` then ends. The session's `extra` is not carried over.
    */
   async rotate(
     session: SessionRecord,
@@ -143,7 +151,8 @@ export class SessionService {
     const verifying = session.mfa === 'pending' && changes.mfa === 'verified';
     // The new session first, then the old one, which must still be there to delete: if a revocation
     // took it meanwhile (deleting the user's sessions, this new one included, or not yet), or another
-    // rotation did, this one lost, and its new session must not outlive the old.
+    // rotation did, this one lost, and its new session must not outlive the old. A revocation still
+    // under way when this one wins reads the user's sessions back, and ends the new one.
     const issued = await this.issue({
       ...rest,
       ...changes,
@@ -172,15 +181,45 @@ export class SessionService {
     return true;
   }
 
-  /** Ends every session of a user, optionally keeping one (`except`: its id). */
+  /**
+   * Ends every session of a user, optionally keeping one (`except`: its id).
+   * Resolves once a read of the user's sessions finds none left but the kept
+   * one, and rejects when the store still lists others after five rounds of
+   * deletes.
+   */
   async revokeAll(userId: string, { except }: { except?: string } = {}): Promise<void> {
     const store = this.storage.sessions;
-    if (!except) {
-      return store.deleteUserSessions(userId);
+    const others = async () => (await store.listUserSessions(userId)).filter((session) => session.id !== except);
+    // A rotation writes its new session, then deletes the old one. One that does both while the
+    // delete below is under way wins (the old session was still there), and the delete can miss its
+    // new session: a list read before it was written, or one `DELETE … WHERE user_id = ?` at
+    // PostgreSQL's Read Committed, whose snapshot predates the new row and which skips the old one
+    // the rotation deleted meanwhile. That `DELETE` removes nothing, so its row count can't tell.
+    // Instead, a statement of its own reads the sessions back, and the deletes repeat until it finds
+    // none. A read that finds none has seen every rotation that won against this revocation: each
+    // wrote its new session before it deleted the old one, which was gone by the time of that read.
+    let left = except ? await others() : [];
+    if (except && left.length === 0) {
+      return;
     }
-    for (const session of await store.listUserSessions(userId)) {
-      if (session.id !== except) {
-        await store.deleteSession(session.id);
+    for (let round = 1; ; round++) {
+      if (except) {
+        for (const session of left) {
+          await store.deleteSession(session.id);
+        }
+      } else {
+        await store.deleteUserSessions(userId);
+      }
+      left = await others();
+      if (left.length === 0) {
+        return;
+      }
+      if (round === REVOKE_ROUNDS) {
+        throw new Error(
+          `SessionService.revokeAll(): ${left.length} ${left.length === 1 ? 'session' : 'sessions'} of user ${userId} ` +
+            `still listed after ${REVOKE_ROUNDS} rounds of deletes. listUserSessions() must read what was just deleted ` +
+            '(the primary, not a replica that lags), and deleteUserSessions() must delete every session of the user.',
+        );
       }
     }
   }

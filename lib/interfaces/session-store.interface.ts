@@ -72,9 +72,17 @@ export interface SessionStore {
   deleteSession(id: string): Promise<boolean>;
   /**
    * The user's sessions, in any order (`[]` when none), expired ones included.
-   * Without `extra`: they feed "your sessions" pages.
+   * Without `extra`: they feed "your sessions" pages, and
+   * `SessionService.revokeAll()` reads them back after it deletes, so read
+   * what was just written and deleted: the primary, not a replica that lags.
    */
   listUserSessions(userId: string): Promise<SessionRecord[]>;
-  /** Deletes every session of the user ("sign out everywhere"). */
+  /**
+   * Deletes every session of the user ("sign out everywhere"): a plain
+   * `DELETE … WHERE user_id = ?`. It may miss a session a rotation writes
+   * while it runs (at Read Committed, its snapshot predates the new row), so
+   * `SessionService.revokeAll()` reads the user's sessions back with
+   * `listUserSessions()` and deletes again until none is left.
+   */
   deleteUserSessions(userId: string): Promise<void>;
 }

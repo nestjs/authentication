@@ -4,6 +4,7 @@
  * Also its options and how it calls `create()`.
  */
 import { AssertionError } from 'node:assert';
+import { setImmediate as tick } from 'node:timers/promises';
 import {
   InMemoryEmailTokenStore,
   InMemoryMagicLinkStore,
@@ -64,6 +65,31 @@ class SlowFirstReadSessionStore extends InMemorySessionStore {
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
     return super.getSession(id);
+  }
+}
+
+/**
+ * PostgreSQL at Read Committed on a busy pool (#81): each write takes a turn of the event loop, and
+ * `DELETE FROM sessions WHERE user_id = ?` reaches the rows a few turns after its snapshot, skipping
+ * those deleted meanwhile and never seeing those inserted.
+ */
+class SnapshotDeleteSessionStore extends InMemorySessionStore {
+  override async createSession(record: SessionRecord) {
+    await tick();
+    return super.createSession(record);
+  }
+  override async deleteSession(id: string) {
+    await tick();
+    return super.deleteSession(id);
+  }
+  override async deleteUserSessions(userId: string) {
+    const snapshot = await super.listUserSessions(userId);
+    for (let turn = 0; turn < 4; turn++) {
+      await tick();
+    }
+    for (const { id } of snapshot) {
+      await super.deleteSession(id);
+    }
   }
 }
 
@@ -157,6 +183,10 @@ describe('authenticationStoreContract()', () => {
 
   it('passes a store whose reads finish out of order (#70)', async () => {
     expect(await failures(() => ({ sessions: new SlowFirstReadSessionStore() }), { contracts: ['sessions'], concurrent: true })).toEqual({});
+  });
+
+  it('passes a store whose user-wide delete misses a session written after its snapshot, as at Read Committed (#81)', async () => {
+    expect(await failures(() => ({ sessions: new SnapshotDeleteSessionStore() }), { contracts: ['sessions'], concurrent: true })).toEqual({});
   });
 
   it('refuses a maxPending that is not a positive integer', () => {
