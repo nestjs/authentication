@@ -518,9 +518,8 @@ describe('TOTP', () => {
 });
 
 describe('SessionService', () => {
-  function setup(options = {}, mfa: { pendingTtl?: Duration } = {}) {
+  function setup<S extends InMemorySessionStore>(options = {}, mfa: { pendingTtl?: Duration } = {}, store: S = new InMemorySessionStore() as S) {
     let clock = 1_000_000;
-    const store = new InMemorySessionStore();
     const sessions = new SessionService(storageWith({ sessions: store }), {
       session: { now: () => clock, idleTtl: '1m', absoluteTtl: '5m', touchInterval: '10s', ...options },
       mfa,
@@ -766,6 +765,82 @@ describe('SessionService', () => {
       await expect(sessions.rotate(session, { mfa: 'verified' })).resolves.toBeNull();
       await expect(store.listUserSessions('u1')).resolves.toEqual([]);
     }
+  });
+
+  /**
+   * Reads and deletes a user's sessions from a snapshot, as PostgreSQL does at Read Committed: the
+   * `DELETE … WHERE user_id = ?` deletes the rows its snapshot holds that are still there when it
+   * reaches them, skipping one another transaction deleted meanwhile, and never sees a row
+   * inserted after its snapshot. `stall()` holds the next such read or delete between its snapshot
+   * and the rest, as a busy connection does (the `pg_sleep()` of #81).
+   */
+  class SnapshotSessionStore extends InMemorySessionStore {
+    private stalled?: { snapshotted: () => void; resume: Promise<void> };
+
+    stall() {
+      let snapshotted!: () => void;
+      let resume!: () => void;
+      const taken = new Promise<void>((resolve) => (snapshotted = resolve));
+      this.stalled = { snapshotted, resume: new Promise<void>((resolve) => (resume = resolve)) };
+      return { snapshotted: taken, resume };
+    }
+
+    override async listUserSessions(userId: string) {
+      const snapshot = await super.listUserSessions(userId);
+      const stalled = this.stalled;
+      this.stalled = undefined;
+      if (stalled) {
+        stalled.snapshotted();
+        await stalled.resume;
+      }
+      return snapshot;
+    }
+
+    override async deleteUserSessions(userId: string) {
+      for (const { id } of await this.listUserSessions(userId)) {
+        await this.deleteSession(id);
+      }
+    }
+  }
+
+  it('a rotation that wins while a revocation is under way leaves no session behind (#81)', async () => {
+    // The revocation has read the user's sessions (the snapshot of its `DELETE`, or with `except`
+    // the list it deletes from), and the rotation writes its new session and deletes the old one
+    // before the revocation reaches it: the rotation wins, and the revocation never saw its session.
+    for (const except of [false, true]) {
+      const { sessions, store } = setup({}, {}, new SnapshotSessionStore());
+      const kept = except ? await sessions.create('u1') : undefined;
+      const { session } = await sessions.create('u1');
+
+      const stall = store.stall();
+      const revoking = sessions.revokeAll('u1', { except: kept?.session.id });
+      await stall.snapshotted;
+      const rotated = await sessions.rotate(session);
+      expect(rotated).not.toBeNull(); // the old session was still there
+      stall.resume();
+      await revoking;
+
+      expect((await store.listUserSessions('u1')).map((s) => s.id)).toEqual(kept ? [kept.session.id] : []);
+      await expect(sessions.validate(rotated!.token)).resolves.toBeNull();
+    }
+  });
+
+  it('revokeAll() reads the sessions back once when nothing races it, and rejects when the store keeps listing them', async () => {
+    const { sessions, store } = setup();
+    await sessions.create('u1');
+    const remove = vi.spyOn(store, 'deleteUserSessions');
+    const list = vi.spyOn(store, 'listUserSessions');
+    await sessions.revokeAll('u1');
+    expect([remove.mock.calls.length, list.mock.calls.length]).toEqual([1, 1]);
+
+    // A `deleteUserSessions()` that misses rows, or a `listUserSessions()` on a replica that lags.
+    remove.mockResolvedValue(undefined);
+    await sessions.create('u1');
+    list.mockClear();
+    await expect(sessions.revokeAll('u1')).rejects.toThrow(
+      'SessionService.revokeAll(): 1 session of user u1 still listed after 5 rounds of deletes.',
+    );
+    expect(list).toHaveBeenCalledTimes(5);
   });
 
   it('of two rotations of one session, one wins: a session does not fork', async () => {
