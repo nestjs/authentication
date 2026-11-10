@@ -27,6 +27,7 @@ export {
   JwtError,
   MagicLinkError,
   MfaAlreadyEnrolledError,
+  PasskeyError,
   RefreshTokenError,
 } from './errors/index.js';
 
@@ -101,6 +102,18 @@ export type {
   OidcStartOptions,
   OidcStateStore,
   OidcTransaction,
+  PasskeyAlgorithm,
+  PasskeyAuthenticationOptions,
+  PasskeyAuthenticationResponse,
+  PasskeyChallengeRecord,
+  PasskeyDescriptor,
+  PasskeyFailure,
+  PasskeyOptions,
+  PasskeyRecord,
+  PasskeyRegistrationOptions,
+  PasskeyRegistrationResponse,
+  PasskeyStore,
+  PasskeyUser,
   PasswordHasherOptions,
   PasswordResetAccount,
   PasswordResetLink,
@@ -146,6 +159,10 @@ export { TokenService } from './jwt/token.service.js';
 export { MagicLinkHandler } from './magic-link/magic-link.handler.js';
 export { MagicLinkService } from './magic-link/magic-link.service.js';
 export { InMemoryMagicLinkStore } from './magic-link/in-memory-magic-link.store.js';
+
+// Passkeys
+export { PasskeyService } from './passkey/passkey.service.js';
+export { InMemoryPasskeyStore } from './passkey/in-memory-passkey.store.js';
 
 // Password reset and email verification
 export { InMemoryEmailTokenStore } from './account/in-memory-email-token.store.js';
