@@ -125,7 +125,7 @@ describe('AuthenticationStorage.registerSource()', () => {
     expect(() => storage.registerSource({})).toThrow('AuthenticationStorage.registerSource(): the contracts go by name, and got none.');
     expect(() => storage.registerSource({ sessions: store(), session: store() } as never)).toThrow(
       'unknown contract `session`. The contracts are sessions (SessionStore), refreshTokens (RefreshTokenStore), ' +
-        'mfa (MfaStore), magicLinks (MagicLinkStore), oidcStates (OidcStateStore), emailTokens (EmailTokenStore).',
+        'mfa (MfaStore), magicLinks (MagicLinkStore), oidcStates (OidcStateStore), passkeys (PasskeyStore), emailTokens (EmailTokenStore).',
     );
   });
 
