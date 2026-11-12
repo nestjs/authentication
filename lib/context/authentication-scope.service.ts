@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type { IncomingHttpHeaders } from 'node:http';
 import { Injectable, type ExecutionContext } from '@nestjs/common';
 import type { AuthenticationResult } from '../interfaces/authentication-result.interface.js';
+import { graphqlContextOf } from '../utils/graphql-context.util.js';
 
 export interface Scope {
   result: AuthenticationResult<any, any> | null;
@@ -70,7 +71,7 @@ export class AuthenticationScope {
         return { request: http.getRequest(), response: http.getResponse() };
       }
       case 'graphql': {
-        const gql = context!.getArgByIndex(2);
+        const gql = graphqlContextOf(context!);
         return gql?.req ? { request: gql.req, response: gql.res } : undefined;
       }
       case 'mcp':

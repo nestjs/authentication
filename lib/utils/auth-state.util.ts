@@ -1,5 +1,6 @@
 import type { ExecutionContext } from '@nestjs/common';
 import { scopedResult } from '../context/authentication-scope.service.js';
+import { graphqlContextOf } from './graphql-context.util.js';
 import type { AuthenticationResult } from '../interfaces/authentication-result.interface.js';
 
 const AUTH_STATE = Symbol.for('nestjs.authentication.state');
@@ -75,7 +76,7 @@ function carrierOf(context: ExecutionContext): Record<PropertyKey, any> | undefi
       return typeof ctx === 'object' && ctx !== null ? ctx : undefined;
     }
     case 'graphql':
-      return context.getArgByIndex(2)?.req;
+      return graphqlContextOf(context)?.req;
     case 'mcp':
     case 'ai': {
       const call = callContextOf(context);
@@ -214,8 +215,7 @@ export function getRawResult(context: ExecutionContext): State | undefined {
  */
 function stateCarrierOf(context: ExecutionContext): Record<PropertyKey, any> | undefined {
   if (context.getType<string>() === 'graphql') {
-    const operation = context.getArgByIndex(2);
-    return typeof operation === 'object' && operation !== null ? operation : undefined;
+    return graphqlContextOf(context);
   }
   return carrierOf(context);
 }
@@ -251,7 +251,7 @@ export function requestOf(context: ExecutionContext): { headers: Headers; method
       return headers ? { headers } : undefined;
     }
     case 'graphql':
-      return context.getArgByIndex(2)?.req;
+      return graphqlContextOf(context)?.req;
     case 'mcp':
     case 'ai': {
       const request = callContextOf(context)?.request;

@@ -23,6 +23,7 @@ import {
   type AuthenticationResult,
 } from '../lib/index.js';
 import { AUTHENTICATION_METADATA, AUTHENTICATION_PUBLIC } from '../lib/authentication.constants.js';
+import { AuthenticationScope } from '../lib/context/authentication-scope.service.js';
 import { LOCK_REGISTRY } from '../lib/services/authentication-registry.service.js';
 
 type User = { id: string; emailVerified?: boolean };
@@ -440,6 +441,55 @@ describe('AuthenticationGuard over graphql-ws', () => {
     await guard.canActivate(context);
     expect(request.user).toEqual({ id: 'first' });
     expect(USER_OF in request).toBe(false);
+  });
+});
+
+// An `_entities` query calls a federation reference resolver with (reference, context, info): it
+// has no `args` argument, so the operation's context comes second.
+describe('AuthenticationGuard on a GraphQL federation reference resolver', () => {
+  const USER_OF = Symbol.for('nestjs.authentication.userOf');
+  type Upgrade = Request & { [USER_OF]?: (context: ExecutionContext) => unknown };
+
+  const entity = (method: keyof Routes, gqlContext: object) => {
+    const reference = { __typename: 'User', id: '7' };
+    const context = new ExecutionContextHost([reference, gqlContext, {}], Routes, Routes.prototype[method]);
+    context.setType('graphql');
+    return context;
+  };
+  const field = (method: keyof Routes, gqlContext: object, args: object = {}) => {
+    const context = new ExecutionContextHost([{}, args, gqlContext, {}], Routes, Routes.prototype[method]);
+    context.setType('graphql');
+    return context;
+  };
+
+  it("authenticates from the operation's context, and shares the result with its other resolvers", async () => {
+    const { guard, first } = setup();
+    const req: Upgrade = { headers: { 'x-first': 'ok' } };
+    const operation = { req };
+
+    const resolved = entity('required', operation);
+    await expect(guard.canActivate(resolved)).resolves.toBe(true);
+    expect(req.user).toEqual({ id: 'first' });
+    expect(req[USER_OF]!(resolved)).toEqual({ id: 'first' });
+
+    // Another entity, and a field resolver, of the same operation: no second run.
+    await guard.canActivate(entity('required', operation));
+    await guard.canActivate(field('required', operation));
+    expect(first.calls).toBe(1);
+  });
+
+  it('hands its request and response to what needs the HTTP exchange (SignInService, magic links, OIDC)', () => {
+    const scope = new AuthenticationScope();
+    const req = { headers: {} };
+    const res = {};
+    const context = entity('open', { req, res });
+    expect(scope.run({ result: null, context }, () => scope.exchange())).toEqual({ request: req, response: res });
+  });
+
+  it("never reads a resolver's arguments, which the client writes", async () => {
+    const { guard } = setup();
+    const forged = field('required', { req: { headers: {} } }, { req: { headers: { 'x-first': 'ok' } } });
+    await expect(refusal(guard.canActivate(forged))).resolves.toBeInstanceOf(UnauthorizedException);
   });
 });
 
