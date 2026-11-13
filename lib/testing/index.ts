@@ -34,6 +34,7 @@ import { MfaService } from '../mfa/mfa.service.js';
 import { base32Decode, hotp } from '../mfa/otp.util.js';
 import type { OidcTransaction } from '../interfaces/oidc.interface.js';
 import type { OidcStateStore } from '../interfaces/oidc-state-store.interface.js';
+import type { PasskeyChallengeRecord, PasskeyRecord, PasskeyStore } from '../interfaces/passkey-store.interface.js';
 import { PasswordHasher } from '../services/password-hasher.service.js';
 import type { SessionRecord } from '../interfaces/session-store.interface.js';
 import { SessionService } from '../session/session.service.js';
@@ -41,7 +42,8 @@ import { SignInService } from '../session/sign-in.service.js';
 
 export interface AuthenticationStoreContractOptions {
   /**
-   * The contracts to check, which `create()` must return. Default: all six.
+   * The contracts to check, which `create()` must return. Default: the six every app has. `'passkeys'` is checked only when listed (passkeys are opt-in, so a
+   * `create()` written before they existed still passes).
    * An app that splits storage runs the suite once per provider:
    * `{ contracts: ['sessions'] }` for its Redis store, the rest for its SQL one.
    */
@@ -54,7 +56,7 @@ export interface AuthenticationStoreContractOptions {
    */
   concurrent?: boolean;
   /**
-   * The most pending magic links, OIDC logins and email tokens your store
+   * The most pending magic links, OIDC logins, passkey challenges and email tokens your store
    * keeps (per kind). When set, a case per kind saves `maxPending + 2` and
    * checks the two that expire first are gone: configure your store with a
    * small cap in the test.
@@ -73,7 +75,7 @@ export interface AuthenticationStoreContractCase {
 /** Stores on fresh state: `create()` is called once per case. */
 export type AuthenticationStoreFactory = () => AuthenticationStorageSources | Promise<AuthenticationStorageSources>;
 
-const ALL: AuthenticationStorageContract[] = ['sessions', 'refreshTokens', 'mfa', 'magicLinks', 'oidcStates', 'emailTokens'];
+const ALL: AuthenticationStorageContract[] = ['sessions', 'refreshTokens', 'mfa', 'magicLinks', 'oidcStates', 'passkeys', 'emailTokens'];
 const SECRET = 'contract-suite-secret-of-at-least-32-bytes!';
 const T0 = 1_700_000_000_000;
 const at = (ms: number) => new Date(T0 + ms);
@@ -88,7 +90,7 @@ export function authenticationStoreContract(
   create: AuthenticationStoreFactory,
   options: AuthenticationStoreContractOptions = {},
 ): AuthenticationStoreContractCase[] {
-  const contracts = options.contracts ?? ALL;
+  const contracts = options.contracts ?? ALL.filter((contract) => contract !== 'passkeys');
   for (const contract of contracts) {
     if (!ALL.includes(contract)) {
       throw new TypeError(`authenticationStoreContract(): unknown contract \`${contract}\``);
@@ -516,7 +518,7 @@ export function authenticationStoreContract(
   // ---------------------------------------------------------------- magic links, OIDC logins, email tokens
 
   const pending = <R, S>(
-    contract: 'magicLinks' | 'oidcStates' | 'emailTokens',
+    contract: 'magicLinks' | 'oidcStates' | 'passkeys' | 'emailTokens',
     kind: string,
     get: (sources: Required<AuthenticationStorageSources>) => S,
     make: (created: number, expires: number) => R,
@@ -603,6 +605,45 @@ export function authenticationStoreContract(
     (store, record) => store.saveOidcState(record),
     (store, record) => store.consumeOidcState(record.state),
   );
+
+  pending<PasskeyChallengeRecord, PasskeyStore>(
+    'passkeys',
+    'challenge',
+    (sources) => sources.passkeys,
+    (created, expires) => ({
+      id: id(),
+      type: created % 2 === 0 ? 'registration' : 'authentication',
+      createdAt: at(created),
+      expiresAt: at(expires),
+      ...(created % 2 === 0 && { userId: uid() }),
+    }),
+    (store, record) => store.savePasskeyChallenge(record),
+    (store, record) => store.consumePasskeyChallenge(record.id),
+  );
+
+  add('passkeys', 'saves, lists, updates and deletes a passkey by its owner', async ({ passkeys: store }) => {
+    const [u1, u2] = [uid(), uid()];
+    const first = passkey(u1, { createdAt: at(0), transports: ['internal', 'hybrid'] });
+    const second = passkey(u1, { createdAt: at(1_000) });
+    const other = passkey(u2);
+    for (const record of [second, first, other]) {
+      await store.savePasskey(record);
+    }
+
+    same(await store.getPasskey(first.id), first, 'getPasskey() returns the passkey as saved');
+    same(await store.getPasskey(id()), undefined, 'getPasskey() returns undefined for an unknown id');
+    same(await store.listUserPasskeys(u1), [first, second], "listUserPasskeys() returns the user's passkeys, oldest first");
+    await assert.rejects(store.savePasskey({ ...other, userId: u1 }), 'savePasskey() rejects an id that is taken');
+    same(await store.getPasskey(other.id), other, '…and leaves the first one as it was');
+
+    await store.touchPasskey(first.id, 7, at(5_000));
+    same(await store.getPasskey(first.id), { ...first, counter: 7, lastUsedAt: at(5_000) }, 'touchPasskey() sets the counter and lastUsedAt');
+
+    same(await store.deletePasskey(first.id, u2), false, "deletePasskey() leaves another user's passkey alone");
+    same(await store.deletePasskey(first.id, u1), true, 'deletePasskey() deletes the own passkey');
+    same(await store.deletePasskey(first.id, u1), false, '…once');
+    same(await store.listUserPasskeys(u1), [second], 'the other passkeys stay');
+  });
 
   pending<EmailTokenRecord, EmailTokenStore>(
     'emailTokens',
@@ -742,6 +783,10 @@ function session(userId: string, overrides: Partial<SessionRecord> = {}): Sessio
 
 function refreshToken(userId: string, familyId: string, overrides: Partial<RefreshTokenRecord> = {}): RefreshTokenRecord {
   return { id: id(), familyId, userId, createdAt: at(0), expiresAt: at(60_000), familyExpiresAt: at(120_000), ...overrides };
+}
+
+function passkey(userId: string, overrides: Partial<PasskeyRecord> = {}): PasskeyRecord {
+  return { id: id(), userId, publicKey: id(), algorithm: 'ES256', counter: 0, createdAt: at(0), ...overrides };
 }
 
 function emailToken(overrides: Partial<EmailTokenRecord> = {}): EmailTokenRecord {

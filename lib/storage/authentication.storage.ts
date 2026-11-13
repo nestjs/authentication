@@ -9,6 +9,8 @@ import { InMemoryMfaStore } from '../mfa/in-memory-mfa.store.js';
 import type { MfaStore } from '../interfaces/mfa-store.interface.js';
 import { InMemoryOidcStateStore } from '../oidc/in-memory-oidc-state.store.js';
 import type { OidcStateStore } from '../interfaces/oidc-state-store.interface.js';
+import { InMemoryPasskeyStore } from '../passkey/in-memory-passkey.store.js';
+import type { PasskeyStore } from '../interfaces/passkey-store.interface.js';
 import { InMemorySessionStore } from '../session/in-memory-session.store.js';
 import type { SessionStore } from '../interfaces/session-store.interface.js';
 import { AUTHENTICATION_STORAGE_REQUIREMENTS } from '../authentication.constants.js';
@@ -138,6 +140,20 @@ export const STORAGE_CONTRACTS: Record<AuthenticationStorageContract, ContractSp
     methods: ['saveOidcState', 'consumeOidcState'],
     inMemory: () => new InMemoryOidcStateStore(),
   },
+  passkeys: {
+    interfaceName: 'PasskeyStore',
+    holds: 'passkeys and their challenges',
+    methods: [
+      'savePasskeyChallenge',
+      'consumePasskeyChallenge',
+      'savePasskey',
+      'getPasskey',
+      'listUserPasskeys',
+      'touchPasskey',
+      'deletePasskey',
+    ],
+    inMemory: () => new InMemoryPasskeyStore(),
+  },
   emailTokens: {
     interfaceName: 'EmailTokenStore',
     holds: 'password reset and verification links',
@@ -242,6 +258,9 @@ export class AuthenticationStorage {
   }
   get oidcStates(): OidcStateStore {
     return this.source('oidcStates') as OidcStateStore;
+  }
+  get passkeys(): PasskeyStore {
+    return this.source('passkeys') as PasskeyStore;
   }
   get emailTokens(): EmailTokenStore {
     return this.source('emailTokens') as EmailTokenStore;

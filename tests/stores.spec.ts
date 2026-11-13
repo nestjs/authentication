@@ -10,8 +10,10 @@ import {
   InMemoryMagicLinkStore,
   InMemoryMfaStore,
   InMemoryOidcStateStore,
+  InMemoryPasskeyStore,
   InMemoryRefreshTokenStore,
   InMemorySessionStore,
+  type AuthenticationStorageContract,
   type AuthenticationStorageSources,
   type EmailTokenPurpose,
   type EmailTokenRecord,
@@ -19,6 +21,8 @@ import {
   type MagicLinkRecord,
   type MagicLinkStore,
   type OidcStateStore,
+  type PasskeyChallengeRecord,
+  type PasskeyStore,
   type RefreshTokenRecord,
 } from '../lib/index.js';
 import type { OidcTransaction } from '../lib/interfaces/oidc.interface.js';
@@ -30,11 +34,15 @@ const inMemory = (): AuthenticationStorageSources => ({
   mfa: new InMemoryMfaStore(),
   magicLinks: new InMemoryMagicLinkStore(),
   oidcStates: new InMemoryOidcStateStore(),
+  passkeys: new InMemoryPasskeyStore(),
   emailTokens: new InMemoryEmailTokenStore(),
 });
 
+/** Every contract, passkeys included: they are not in the suite's default run. */
+const ALL: AuthenticationStorageContract[] = ['sessions', 'refreshTokens', 'mfa', 'magicLinks', 'oidcStates', 'passkeys', 'emailTokens'];
+
 describe('the in-memory stores pass the contract suite', () => {
-  for (const c of authenticationStoreContract(inMemory, { concurrent: true, maxPending: 10_000 })) {
+  for (const c of authenticationStoreContract(inMemory, { concurrent: true, maxPending: 10_000, contracts: ALL })) {
     it(c.name, c.run);
   }
 });
@@ -143,6 +151,22 @@ class ReadThenDeleteOidcStateStore extends ReadThenDelete<OidcTransaction> imple
   }
 }
 
+/** Only the challenge consume is naive: the passkey calls are the in-memory store's. */
+class ReadThenDeletePasskeyStore extends ReadThenDelete<PasskeyChallengeRecord> implements PasskeyStore {
+  private readonly passkeys = new InMemoryPasskeyStore();
+  async savePasskeyChallenge(record: PasskeyChallengeRecord) {
+    this.put(record.id, { ...record }, record.createdAt.getTime(), (r) => r.expiresAt.getTime());
+  }
+  consumePasskeyChallenge(id: string) {
+    return this.take(id);
+  }
+  savePasskey: PasskeyStore['savePasskey'] = (record) => this.passkeys.savePasskey(record);
+  getPasskey: PasskeyStore['getPasskey'] = (id) => this.passkeys.getPasskey(id);
+  listUserPasskeys: PasskeyStore['listUserPasskeys'] = (userId) => this.passkeys.listUserPasskeys(userId);
+  touchPasskey: PasskeyStore['touchPasskey'] = (id, counter, usedAt) => this.passkeys.touchPasskey(id, counter, usedAt);
+  deletePasskey: PasskeyStore['deletePasskey'] = (id, userId) => this.passkeys.deletePasskey(id, userId);
+}
+
 class ReadThenDeleteEmailTokenStore extends ReadThenDelete<EmailTokenRecord> implements EmailTokenStore {
   async saveEmailToken(record: EmailTokenRecord) {
     this.put(record.id, { ...record }, record.createdAt.getTime(), (r) => r.expiresAt.getTime());
@@ -168,6 +192,7 @@ const naive = (): AuthenticationStorageSources => ({
   mfa: new ReadThenWriteMfaStore(),
   magicLinks: new ReadThenDeleteMagicLinkStore(),
   oidcStates: new ReadThenDeleteOidcStateStore(),
+  passkeys: new ReadThenDeletePasskeyStore(),
   emailTokens: new ReadThenDeleteEmailTokenStore(),
 });
 
@@ -182,11 +207,11 @@ async function failures(cases: ReturnType<typeof authenticationStoreContract>): 
 
 describe('the contract suite catches stores that read, then write', () => {
   it('passes them without `concurrent`: every sequential case holds', async () => {
-    expect(await failures(authenticationStoreContract(naive))).toEqual([]);
+    expect(await failures(authenticationStoreContract(naive, { contracts: ALL }))).toEqual([]);
   });
 
   it('fails each of them on its concurrency cases, and only those', async () => {
-    const failed = await failures(authenticationStoreContract(naive, { concurrent: true }));
+    const failed = await failures(authenticationStoreContract(naive, { concurrent: true, contracts: ALL }));
     expect(failed.sort()).toEqual(
       [
         'sessions: a request racing a sign-out or a rotation never brings the session back (SessionService)',
@@ -200,6 +225,7 @@ describe('the contract suite catches stores that read, then write', () => {
         'mfa: a burst of parallel guesses gets maxAttempts checks, not one per request (MfaService)',
         'magicLinks: hands a link out once under concurrency',
         'oidcStates: hands a login out once under concurrency',
+        'passkeys: hands a challenge out once under concurrency',
         'emailTokens: hands a token out once under concurrency',
         'emailTokens: password reset and verification links work once under concurrency (the services)',
       ].sort(),

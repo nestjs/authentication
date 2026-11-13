@@ -3,6 +3,7 @@ import type { RefreshTokenStore } from './refresh-token-store.interface.js';
 import type { MagicLinkStore } from './magic-link-store.interface.js';
 import type { MfaStore } from './mfa-store.interface.js';
 import type { OidcStateStore } from './oidc-state-store.interface.js';
+import type { PasskeyStore } from './passkey-store.interface.js';
 import type { SessionStore } from './session-store.interface.js';
 
 /**
@@ -19,6 +20,8 @@ export interface AuthenticationStorageSources {
   magicLinks?: MagicLinkStore;
   /** OAuth / OpenID Connect logins in progress. */
   oidcStates?: OidcStateStore;
+  /** Passkeys and the challenges in flight. */
+  passkeys?: PasskeyStore;
   /** Pending password reset and email verification links. */
   emailTokens?: EmailTokenStore;
 }
