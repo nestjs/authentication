@@ -59,7 +59,7 @@
     "@commitlint/cli": "21.2.4",
     "@commitlint/config-angular": "21.2.4",
     "@electric-sql/pglite": "0.5.8",
-    "@electric-sql/pglite-socket": "0.2.11",
+    "@electric-sql/pglite-socket": "0.2.19",
     "@nestjs/apollo": "14.2.1",
     "@nestjs/authorization": "0.1.4",
     "@nestjs/common": "12.4.2",
