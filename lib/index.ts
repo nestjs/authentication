@@ -106,6 +106,8 @@ export type {
   PasswordResetLink,
   PasswordResetOptions,
   PasswordResetResult,
+  RefreshClaimsMapper,
+  RefreshTokenMapOptions,
   RefreshTokenOptions,
   RefreshTokenRecord,
   RefreshTokenStore,

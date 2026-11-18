@@ -1,5 +1,20 @@
 import type { AuthenticationTypes } from '../index.js';
 
+/**
+ * Maps a refresh-token family's claims to the successor's, given the
+ * family's current claims and the `userId` it belongs to. Can be async, and
+ * can throw to refuse the refresh without spending the token (the caller
+ * sees whatever it threw). `amr`, `auth_time` and the registered JWT claims
+ * (`iss`, `sub`, `aud`, `exp`, `nbf`, `iat`, `jti`) stay the family's own,
+ * whatever is returned.
+ */
+export type RefreshClaimsMapper = (current: Record<string, unknown>, userId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
+
+export interface RefreshTokenMapOptions {
+  /** Replaces the family's claims with the mapper's result for every token minted from now on. */
+  claims?: RefreshClaimsMapper;
+}
+
 export interface IssueTokensOptions {
   /**
    * Claims that describe the sign-in (`amr`, `auth_time`, …): this access

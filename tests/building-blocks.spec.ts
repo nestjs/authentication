@@ -1023,6 +1023,66 @@ describe('TokenService', () => {
     expect(claimsOf(plain.accessToken).amr).toBeUndefined();
   });
 
+  it('refresh({ claims }) maps the family claims for this and every later token', async () => {
+    const { service } = setup();
+    let current = await service.issue('u1', { claims: { workspace: 'a' } });
+
+    current = await service.refresh(current.refreshToken, { claims: (claims) => ({ ...claims, workspace: 'b' }) });
+    expect(claimsOf(current.accessToken)).toMatchObject({ workspace: 'b' });
+
+    // The mapped claims stick: a later refresh with no mapper still carries them.
+    current = await service.refresh(current.refreshToken);
+    expect(claimsOf(current.accessToken)).toMatchObject({ workspace: 'b' });
+  });
+
+  it('refresh({ claims }) gives the mapper the userId, and keeps amr/auth_time/registered claims whatever it returns', async () => {
+    const { service } = setup();
+    const seenUserIds: string[] = [];
+    const first = await service.issue('u1', { claims: { amr: ['pwd'], auth_time: 1, workspace: 'a' } });
+
+    const next = await service.refresh(first.refreshToken, {
+      claims: (claims, userId) => {
+        seenUserIds.push(userId);
+        return { ...claims, amr: ['hijacked'], auth_time: 999, sub: 'u2', iss: 'evil', workspace: 'b' };
+      },
+    });
+
+    expect(seenUserIds).toEqual(['u1']);
+    expect(claimsOf(next.accessToken)).toMatchObject({ sub: 'u1', amr: ['pwd'], auth_time: 1, workspace: 'b' });
+    expect(claimsOf(next.accessToken).iss).toBeUndefined();
+  });
+
+  it('refresh({ claims }): a mapper that throws refuses the refresh without spending the token', async () => {
+    const { service, record } = setup();
+    const first = await service.issue('u1');
+
+    const error = new Error('switch not allowed');
+    await expect(
+      service.refresh(first.refreshToken, {
+        claims: () => {
+          throw error;
+        },
+      }),
+    ).rejects.toBe(error);
+    expect((await record(first.refreshToken))!.usedAt).toBeUndefined(); // not spent
+
+    await expect(service.refresh(first.refreshToken)).resolves.toBeDefined(); // still usable
+  });
+
+  it('refresh({ claims }) can be async', async () => {
+    const { service } = setup();
+    const first = await service.issue('u1', { claims: { workspace: 'a' } });
+
+    const next = await service.refresh(first.refreshToken, {
+      claims: async (claims) => {
+        await Promise.resolve();
+        return { ...claims, workspace: 'b' };
+      },
+    });
+
+    expect(claimsOf(next.accessToken)).toMatchObject({ workspace: 'b' });
+  });
+
   it('owns the amr values that mean a second factor: the app cannot mint verified tokens by accident', async () => {
     const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
     try {
