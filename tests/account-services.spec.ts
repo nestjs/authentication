@@ -220,9 +220,16 @@ class Accounts extends PasswordResetHandler {
   }
 }
 
-function resetWith({ withVerification = false, ttl }: { withVerification?: boolean; ttl?: string } = {}) {
+function resetWith({
+  withVerification = false,
+  ttl,
+  hashPassword,
+}: { withVerification?: boolean; ttl?: string; hashPassword?: (password: string) => unknown } = {}) {
   let clock = T0;
   const accounts = new Accounts();
+  if (hashPassword) {
+    accounts.hashPassword = hashPassword as PasswordResetHandler['hashPassword'];
+  }
   const mailer = new Mailer();
   const hasher = new PasswordHasher({ logN: 10 });
   const emailTokens = new InMemoryEmailTokenStore();
@@ -391,6 +398,64 @@ describe('PasswordResetService', () => {
     // The fingerprint of the password it replaces no longer matches.
     await expect(service.reset(token, 'another password')).resolves.toBeNull();
     await expect(hasher.verify('new password', accounts.rows.get('u1')!.passwordHash!)).resolves.toBe(true);
+  });
+
+  it('stores the hash the handler’s hashPassword() returns, made from the password as typed', async () => {
+    const hashed: string[] = [];
+    const { service, accounts, hasher, linkFor } = resetWith({
+      hashPassword: async (password) => {
+        hashed.push(password);
+        return `$argon2id$${password}`;
+      },
+    });
+    accounts.rows.set('u1', { id: 'u1', email: 'ada@example.com', passwordHash: '$argon2id$old password' });
+    const scrypt = vi.spyOn(hasher, 'hash');
+
+    await expect(service.reset(await linkFor('ada@example.com'), 'ﬁne password')).resolves.toEqual({ userId: 'u1' });
+    expect(hashed).toEqual(['ﬁne password']); // not NFKC-normalized: the ligature stays
+    expect(accounts.rows.get('u1')!.passwordHash).toBe('$argon2id$ﬁne password');
+    expect(scrypt).not.toHaveBeenCalled();
+
+    // A link still works only while the stored hash, whatever its format, is unchanged.
+    const stale = await linkFor('ada@example.com');
+    accounts.rows.get('u1')!.passwordHash = '$argon2id$changed elsewhere';
+    await expect(service.reset(stale, 'another password')).resolves.toBeNull();
+    expect(accounts.rows.get('u1')!.passwordHash).toBe('$argon2id$changed elsewhere');
+  });
+
+  it('leaves the password, the sign-ins and the link as they were when hashPassword() fails or returns no hash', async () => {
+    const noHash = "PasswordResetHandler.hashPassword() must return the new password's hash, a non-empty string.";
+    const outcomes: [string, () => unknown, string][] = [
+      [
+        'a throw',
+        () => {
+          throw new Error('argon2 failed');
+        },
+        'argon2 failed',
+      ],
+      ['a rejection', () => Promise.reject(new Error('argon2 failed')), 'argon2 failed'],
+      ['an empty string', () => '', noHash],
+      ['undefined', () => undefined, noHash],
+      ['a number', () => 42, noHash],
+    ];
+    for (const [outcome, fail, message] of outcomes) {
+      let hashPassword: (password: string) => unknown = fail;
+      const { service, accounts, sessions, seen, linkFor } = resetWith({ hashPassword: (password) => hashPassword(password) });
+      accounts.rows.set('u1', { id: 'u1', email: 'ada@example.com', passwordHash: 'h' });
+      const laptop = await sessions.create('u1');
+      const updates = vi.spyOn(accounts, 'updatePassword');
+      const token = await linkFor('ada@example.com');
+
+      await expect(service.reset(token, 'new password'), outcome).rejects.toThrow(message);
+      expect(updates, outcome).not.toHaveBeenCalled();
+      expect(accounts.rows.get('u1')!.passwordHash, outcome).toBe('h');
+      await expect(sessions.validate(laptop.token), outcome).resolves.toMatchObject({ userId: 'u1' });
+      expect(seen.filter((event) => event.type === 'password-reset'), outcome).toEqual([]);
+
+      hashPassword = (password) => `$argon2id$${password}`;
+      await expect(service.reset(token, 'new password'), outcome).resolves.toEqual({ userId: 'u1' });
+      expect(accounts.rows.get('u1')!.passwordHash, outcome).toBe('$argon2id$new password');
+    }
   });
 
   it('throws the step’s error, and logs, when the link cannot be given back either', async () => {

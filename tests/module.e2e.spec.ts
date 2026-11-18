@@ -264,6 +264,11 @@ describe('AuthenticationRegistry', () => {
       expect(() => registry.registerHandler('passwordReset', { send() {} } as never)).toThrow(
         "AuthenticationRegistry.registerHandler(): an object doesn't implement PasswordResetHandler for `passwordReset`: findUser(), updatePassword() are missing.",
       );
+      expect(() =>
+        registry.registerHandler('passwordReset', { findUser: () => null, send() {}, updatePassword() {}, hashPassword: 'argon2' } as never),
+      ).toThrow(
+        "AuthenticationRegistry.registerHandler(): an object doesn't implement PasswordResetHandler for `passwordReset`: `hashPassword` is set, but not a method.",
+      );
       expect(() => registry.registerHandler('oidc', null as never)).toThrow('expected a OidcAccountResolver as `oidc`, got null.');
     });
 
