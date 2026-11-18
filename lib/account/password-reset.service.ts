@@ -96,8 +96,9 @@ export class PasswordResetService implements OnModuleDestroy {
    * for an unknown, used or expired token, and for one whose account
    * changed its address or password since the link was sent. `null` too,
    * before the token is looked up (so the link still works), for a password
-   * `PasswordHasher` refuses: not a string, empty, or over 4 KiB. Check your
-   * own password rules before calling it. With `signIn`, a request from
+   * `PasswordHasher` refuses: not a string, empty, or over 4 KiB, also when
+   * the handler hashes it with `hashPassword()`. Check your own password
+   * rules before calling it. With `signIn`, a request from
    * another origin than the app's own and `session.trustedOrigins` gets a
    * `ForbiddenException` first, as `SignInService.signIn()` does, so the link
    * and the password stay as they were. Without `signIn`, the origin is not
@@ -197,13 +198,25 @@ export class PasswordResetService implements OnModuleDestroy {
       return null;
     }
 
-    const passwordHash = await this.hasher.hash(password);
+    const passwordHash = await this.hash(handler, password);
     // Sign-ins end before the new password is stored, so a store that fails leaves the old password
     // without its sessions rather than the new one next to them; and again after, for any sign-in
     // that started in between.
     await this.revokeSignIns(account.id);
     await handler.updatePassword(account.id, passwordHash);
     return account;
+  }
+
+  /** The new password's hash: from the handler's `hashPassword()` when it has one, else from `PasswordHasher`. */
+  private async hash(handler: PasswordResetHandler, password: string): Promise<string> {
+    if (!handler.hashPassword) {
+      return this.hasher.hash(password);
+    }
+    const passwordHash: unknown = await handler.hashPassword(password);
+    if (typeof passwordHash !== 'string' || passwordHash === '') {
+      throw new TypeError("PasswordResetHandler.hashPassword() must return the new password's hash, a non-empty string.");
+    }
+    return passwordHash;
   }
 
   /** Ends every session and refresh-token family (with refresh tokens on) of the user. */

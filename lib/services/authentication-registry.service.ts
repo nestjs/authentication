@@ -13,6 +13,8 @@ import type {
 interface HandlerSpec {
   className: string;
   methods: readonly string[];
+  /** Methods a handler may leave out: when it has one, it must be a method. */
+  optional?: readonly string[];
   /** What the option looks like, for the message when it's missing. */
   option: string;
 }
@@ -26,6 +28,7 @@ const HANDLERS: Record<AuthenticationHandlerName, HandlerSpec> = {
   passwordReset: {
     className: 'PasswordResetHandler',
     methods: ['findUser', 'send', 'updatePassword'],
+    optional: ['hashPassword'],
     option: "passwordReset: { url: 'https://app.example.com/reset-password' }",
   },
   magicLink: {
@@ -136,7 +139,8 @@ export class AuthenticationRegistry {
   /**
    * Registers the handler of a feature: `registerHandler('passwordReset', this)`.
    * The feature also needs its module option. Throws, registering nothing,
-   * for an unknown feature, a handler missing one of its methods, a feature
+   * for an unknown feature, a handler missing one of its methods (or with an
+   * optional one, like `hashPassword`, that isn't a method), a feature
    * that already has one (unless `replace` is set), and once the registry
    * has locked.
    */
@@ -153,7 +157,7 @@ export class AuthenticationRegistry {
       );
     }
 
-    const { className, methods } = HANDLERS[feature];
+    const { className, methods, optional = [] } = HANDLERS[feature];
     if (handler === null || typeof handler !== 'object') {
       throw new TypeError(`${where}: expected a ${className} as \`${feature}\`, got ${nameOf(handler)}.`);
     }
@@ -162,6 +166,17 @@ export class AuthenticationRegistry {
       throw new TypeError(
         `${where}: ${nameOf(handler)} doesn't implement ${className} for \`${feature}\`: ` +
           `${missing.map((method) => `${method}()`).join(', ')} ${missing.length === 1 ? 'is' : 'are'} missing.`,
+      );
+    }
+    // An optional method set to anything else would otherwise be skipped without a word.
+    const notMethods = optional.filter((method) => {
+      const value = (handler as unknown as Record<string, unknown>)[method];
+      return value !== undefined && typeof value !== 'function';
+    });
+    if (notMethods.length > 0) {
+      throw new TypeError(
+        `${where}: ${nameOf(handler)} doesn't implement ${className} for \`${feature}\`: ` +
+          `${notMethods.map((method) => `\`${method}\``).join(', ')} ${notMethods.length === 1 ? 'is' : 'are'} set, but not a method.`,
       );
     }
 

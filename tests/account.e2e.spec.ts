@@ -506,3 +506,50 @@ describe('password reset and email verification: startup', () => {
     }
   });
 });
+
+describe('password reset with the handler’s own hashPassword()', () => {
+  it('stores the hash of a handler provided in a module of the app', async () => {
+    const rows = new Map([['u1', { id: 'u1', email: 'ada@example.com', passwordHash: '$argon2id$old password' as string | null }]]);
+    const links: PasswordResetLink[] = [];
+    const stored: string[] = [];
+
+    @Injectable()
+    class Argon2ResetMailer extends PasswordResetHandler {
+      constructor(registry: AuthenticationRegistry) {
+        super();
+        registry.registerHandler('passwordReset', this);
+      }
+      findUser(email: string) {
+        return [...rows.values()].find((row) => row.email === email) ?? null;
+      }
+      send(link: PasswordResetLink) {
+        links.push(link);
+      }
+      async hashPassword(password: string) {
+        return `$argon2id$${password}`;
+      }
+      updatePassword(userId: string, passwordHash: string) {
+        stored.push(passwordHash);
+        rows.get(userId)!.passwordHash = passwordHash;
+      }
+    }
+    @Module({ providers: [Argon2ResetMailer] })
+    class Argon2ResetModule {}
+
+    const moduleRef = await Test.createTestingModule({
+      imports: [Argon2ResetModule, AuthenticationModule.forRoot({ passwordReset: { url: 'https://app.test/reset' } })],
+    }).compile();
+    const app = await moduleRef.init();
+    try {
+      const passwordResets = app.get(PasswordResetService);
+      passwordResets.request('ada@example.com');
+      await passwordResets.onModuleDestroy(); // waits for the request in flight
+      const token = new URL(links[0].url).searchParams.get('token')!;
+
+      await expect(passwordResets.reset(token, 'new password')).resolves.toEqual({ userId: 'u1' });
+      expect(stored).toEqual(['$argon2id$new password']);
+    } finally {
+      await app.close();
+    }
+  });
+});
