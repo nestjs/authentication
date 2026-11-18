@@ -10,9 +10,11 @@ export interface RefreshTokenRecord {
   familyExpiresAt: Date;
   usedAt?: Date;
   /**
-   * Claims fixed at sign-in (`amr`, `auth_time`, …) that every token of the
+   * Claims set at sign-in (`amr`, `auth_time`, …) that every token of the
    * family carries, so access tokens minted on refresh describe the same
-   * authentication: a sign-in that passed MFA stays MFA-verified.
+   * authentication: a sign-in that passed MFA stays MFA-verified. A `claims`
+   * mapper passed to `refresh()` can replace them, except `amr`, `auth_time`
+   * and the registered JWT claims.
    */
   claims?: Record<string, unknown>;
 }

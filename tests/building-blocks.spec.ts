@@ -1069,6 +1069,50 @@ describe('TokenService', () => {
     await expect(service.refresh(first.refreshToken)).resolves.toBeDefined(); // still usable
   });
 
+  it('refresh({ claims }) gives the mapper a copy: changing it in place cannot add a factor', async () => {
+    const { service } = setup();
+    const first = await service.issue('u1', { claims: { amr: ['pwd'], workspace: 'a' } });
+
+    const next = await service.refresh(first.refreshToken, {
+      claims: (claims) => {
+        (claims.amr as string[]).push('mfa');
+        return { ...claims, workspace: 'b' };
+      },
+    });
+
+    expect(claimsOf(next.accessToken)).toMatchObject({ amr: ['pwd'], workspace: 'b' });
+  });
+
+  it('refresh({ claims }): what a mapper that throws changed in its copy is not kept', async () => {
+    const { service } = setup();
+    const first = await service.issue('u1', { claims: { amr: ['pwd'], workspace: 'a' } });
+
+    await expect(
+      service.refresh(first.refreshToken, {
+        claims: (claims) => {
+          (claims.amr as string[]).push('mfa');
+          throw new Error('switch not allowed');
+        },
+      }),
+    ).rejects.toThrow('switch not allowed');
+
+    const next = await service.refresh(first.refreshToken);
+    expect(claimsOf(next.accessToken)).toMatchObject({ amr: ['pwd'], workspace: 'a' });
+  });
+
+  it.each([
+    ['null', null],
+    ['a string', 'b'],
+    ['an array', ['b']],
+    ['a number', 1],
+  ])('refresh({ claims }): a mapper that returns %s refuses the refresh without spending the token', async (_, result) => {
+    const { service, record } = setup();
+    const first = await service.issue('u1', { claims: { workspace: 'a' } });
+
+    await expect(service.refresh(first.refreshToken, { claims: () => result as never })).rejects.toThrow(TypeError);
+    expect((await record(first.refreshToken))!.usedAt).toBeUndefined();
+  });
+
   it('refresh({ claims }) can be async', async () => {
     const { service } = setup();
     const first = await service.issue('u1', { claims: { workspace: 'a' } });

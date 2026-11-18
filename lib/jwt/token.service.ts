@@ -141,7 +141,9 @@ export class TokenService {
    * them for this and every later token of the family (a session switching
    * context, for example). A mapper that throws refuses the refresh without
    * spending the token. `amr`, `auth_time` and the registered JWT claims
-   * stay the family's own, whatever the mapper returns.
+   * stay the family's own, whatever the mapper returns. Like any two
+   * refreshes of one token, a switch and a refresh sent at the same time
+   * count as a reuse.
    */
   async refresh(refreshToken: string, options?: RefreshTokenMapOptions): Promise<TokenPair> {
     const signer = this.requireSigner();
@@ -310,13 +312,14 @@ export class TokenService {
   }
 
   /**
-   * Runs `mapper` on a copy of the family's claims, then restores `amr`,
-   * `auth_time` and the registered JWT claims (`iss`, `sub`, `aud`, `exp`,
-   * `nbf`, `iat`, `jti`) to what the family already had: the mapper can add
-   * or change its own claims, not those.
+   * Runs `mapper` on a deep copy of the family's claims, so changing them in
+   * place has no effect, then puts back the family's own `LOCKED_CLAIMS`.
    */
   private async mapClaims(record: RefreshTokenRecord, mapper: RefreshClaimsMapper): Promise<Record<string, unknown> | undefined> {
-    const mapped = await mapper({ ...record.claims }, record.userId);
+    const mapped = await mapper(structuredClone(record.claims ?? {}), record.userId);
+    if (typeof mapped !== 'object' || mapped === null || Array.isArray(mapped)) {
+      throw new TypeError('TokenService.refresh(): the `claims` mapper must return an object');
+    }
     const own = Object.fromEntries(Object.entries(mapped).filter(([claim]) => !LOCKED_CLAIMS.has(claim)));
     const locked = Object.fromEntries(Object.entries(record.claims ?? {}).filter(([claim]) => LOCKED_CLAIMS.has(claim)));
     const result = { ...own, ...locked };
