@@ -11,9 +11,19 @@ import type { JwtSignerOptions } from '../interfaces/jwt-options.interface.js';
 import { RefreshTokenError } from '../errors/refresh-token.error.js';
 import type { RefreshTokenOptions } from '../interfaces/refresh-token-options.interface.js';
 import type { RefreshTokenRecord } from '../interfaces/refresh-token-store.interface.js';
-import type { AccessTokenResult, IssueTokensOptions, IssuedTokens, TokenPair } from '../interfaces/token.interface.js';
+import type {
+  AccessTokenResult,
+  IssueTokensOptions,
+  IssuedTokens,
+  RefreshClaimsMapper,
+  RefreshTokenMapOptions,
+  TokenPair,
+} from '../interfaces/token.interface.js';
 import { MFA_AMR_VALUES } from './amr.util.js';
 import { JwtSigner } from './jwt-signer.service.js';
+
+/** `refresh()`'s `claims` mapper cannot change these: the registered JWT claims, plus `amr` and `auth_time`. */
+const LOCKED_CLAIMS = new Set(['iss', 'sub', 'aud', 'exp', 'nbf', 'iat', 'jti', 'amr', 'auth_time']);
 
 /**
  * Tokens for clients that do not keep cookies (mobile apps, CLIs): a
@@ -126,8 +136,16 @@ export class TokenService {
    * the family's claims. Throws {@link RefreshTokenError} (`invalid`,
    * `expired`, `reused`), which a route answers with 401. Throws without
    * `accessToken`, and with `refreshToken: false`.
+   *
+   * `claims`, given the family's current claims and its `userId`, replaces
+   * them for this and every later token of the family (a session switching
+   * context, for example). A mapper that throws refuses the refresh without
+   * spending the token. `amr`, `auth_time` and the registered JWT claims
+   * stay the family's own, whatever the mapper returns. Like any two
+   * refreshes of one token, a switch and a refresh sent at the same time
+   * count as a reuse.
    */
-  async refresh(refreshToken: string): Promise<TokenPair> {
+  async refresh(refreshToken: string, options?: RefreshTokenMapOptions): Promise<TokenPair> {
     const signer = this.requireSigner();
     this.requireRefreshTokens('refresh');
     if (typeof refreshToken !== 'string' || !TOKEN_PATTERN.test(refreshToken)) {
@@ -151,10 +169,13 @@ export class TokenService {
       throw await this.reused(record);
     }
 
+    // Runs, and may throw, before anything is saved or spent: a refusal here is not a reuse.
+    const claims = options?.claims ? await this.mapClaims(record, options.claims) : record.claims;
+
     // The successor is saved before this token is spent: a store that fails in between leaves it
     // unspent, so the client's retry is a retry, not a theft that signs the user out. If another
     // request spent it first, revoking the family revokes this successor too.
-    const next = await this.create(record.userId, record.familyId, record.familyExpiresAt, record.claims);
+    const next = await this.create(record.userId, record.familyId, record.familyExpiresAt, claims);
     if (!(await store.markRefreshTokenUsed(record.id, now))) {
       throw await this.reused(record);
     }
@@ -288,6 +309,21 @@ export class TokenService {
 
     const kept = unique.filter((method) => !stripped.includes(method));
     return kept.length ? { ...rest, amr: kept } : rest;
+  }
+
+  /**
+   * Runs `mapper` on a deep copy of the family's claims, so changing them in
+   * place has no effect, then puts back the family's own `LOCKED_CLAIMS`.
+   */
+  private async mapClaims(record: RefreshTokenRecord, mapper: RefreshClaimsMapper): Promise<Record<string, unknown> | undefined> {
+    const mapped = await mapper(structuredClone(record.claims ?? {}), record.userId);
+    if (typeof mapped !== 'object' || mapped === null || Array.isArray(mapped)) {
+      throw new TypeError('TokenService.refresh(): the `claims` mapper must return an object');
+    }
+    const own = Object.fromEntries(Object.entries(mapped).filter(([claim]) => !LOCKED_CLAIMS.has(claim)));
+    const locked = Object.fromEntries(Object.entries(record.claims ?? {}).filter(([claim]) => LOCKED_CLAIMS.has(claim)));
+    const result = { ...own, ...locked };
+    return Object.keys(result).length ? result : undefined;
   }
 
   private now() {
