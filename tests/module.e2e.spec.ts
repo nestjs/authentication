@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import {
   Controller,
   Get,
@@ -154,6 +155,31 @@ describe('AuthenticationModule registration', () => {
 
     const { accessToken } = await app.get(TokenService).issue('u2');
     await request(app.getHttpServer()).get('/me').set('Authorization', `Bearer ${accessToken}`).expect(200, { id: 'u2' });
+  });
+
+  it('accessToken.allowShortSecret: signs with a short existing secret, and the bearer provider verifies it', async () => {
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    class Tokens extends JwtBearerProvider<{ id: string }> {
+      validate(claims: JwtClaims) {
+        return { id: claims.sub! };
+      }
+    }
+    const register: Provider = {
+      provide: 'REGISTER_PROVIDERS',
+      inject: [AuthenticationRegistry],
+      useFactory: (registry: AuthenticationRegistry) => registry.registerProvider(new Tokens()),
+    };
+
+    try {
+      app = await boot(AuthenticationModule.forRoot({ accessToken: { key: 'dev-secret', allowShortSecret: true } }), { providers: [register] });
+      const { accessToken } = await app.get(TokenService).issue('u3');
+      const [header, payload, signature] = accessToken.split('.');
+      expect(signature).toBe(createHmac('sha256', 'dev-secret').update(`${header}.${payload}`).digest('base64url'));
+      await request(app.getHttpServer()).get('/me').set('Authorization', `Bearer ${accessToken}`).expect(200, { id: 'u3' });
+      expect(warn.mock.calls.some(([message]) => /HS256 secret is 10 bytes/.test(String(message)))).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

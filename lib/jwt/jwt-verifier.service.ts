@@ -14,6 +14,7 @@ import {
   unsupportedKeyError,
   validateClaims,
   verifySignature,
+  warnShortSecret,
 } from './jws.util.js';
 
 /**
@@ -48,7 +49,10 @@ export class JwtVerifier {
       }
       this.algorithms = options.algorithms ?? [implied];
       for (const alg of this.algorithms) {
-        assertKeyFits(alg, this.key, 'JwtVerifier');
+        assertKeyFits(alg, this.key, 'JwtVerifier', { allowShortSecret: options.allowShortSecret });
+        if (options.allowShortSecret) {
+          warnShortSecret(alg, this.key, 'JwtVerifier');
+        }
       }
       // A public key is someone else's, an identity provider's that signs every client's tokens with
       // it, as with a JWKS. A secret or a private key is the app's own (`verifierForSigner()`).
@@ -87,7 +91,7 @@ export class JwtVerifier {
     }
 
     const key = this.key ?? (await this.jwks!.getKey(header));
-    verifySignature(alg, key, decoded);
+    verifySignature(alg, key, decoded, { allowShortSecret: this.options.allowShortSecret });
     validateClaims(decoded.payload, this.options);
 
     return decoded.payload;
@@ -133,6 +137,7 @@ export function verifierForSigner(
     audience: signer.audience,
     type: signer.type,
     now: signer.now,
+    allowShortSecret: signer.allowShortSecret,
     ...(alg && { algorithms: [alg] }),
     ...overrides,
     // The signer's own key (a secret or a private key): its tokens are the app's.

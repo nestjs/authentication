@@ -1,6 +1,7 @@
 import { constants, createHmac, createSecretKey, generateKeyPairSync, sign as cryptoSign, type KeyObject } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { Logger } from '@nestjs/common';
 import { JwksClient, JwtError, JwtSigner, JwtVerifier, type JwsAlgorithm } from '../lib/index.js';
 
 const NOW = 1_800_000_000; // JWT times are in seconds
@@ -41,6 +42,55 @@ const keys = {
 // HS384, 64 for HS512. `SECRET` (43 bytes) is long enough for HS256 only.
 const SECRET_48 = 'test-secret-for-hs384-that-is-at-least-48-bytes!';
 const SECRET_64 = 'test-secret-for-hs512-that-must-be-at-least-sixty-four-bytes-long';
+
+describe('allowShortSecret', () => {
+  const SHORT = 'dev-secret'; // 10 bytes: what a `.env` often holds, and what other services may verify with
+  const warn = () => vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+  afterEach(() => vi.restoreAllMocks());
+
+  it('names the option when a secret is merely short, and not for other bad keys', () => {
+    expect(() => new JwtSigner({ key: SHORT })).toThrow(
+      'JwtSigner: the key is not a valid HS256 key; HS256 needs a secret of at least 32 bytes (`openssl rand -base64 32`). ' +
+        'To keep an existing shorter secret (10 bytes), set `allowShortSecret: true` next to the key; a short secret can be guessed offline from any token.',
+    );
+    expect(() => new JwtVerifier({ key: keys.rsa.publicKey, algorithms: ['HS256'], issuer: 'i', audience: 'a' })).toThrow(
+      /^(?!.*allowShortSecret).*HS256 needs a secret/,
+    );
+  });
+
+  it('signs plain HS256 with the secret as given, which the other side verifies with it', async () => {
+    warn();
+    const token = new JwtSigner({ key: SHORT, allowShortSecret: true, now: nowMs }).sign({ sub: 'u1' });
+    const [header, payload, signature] = token.split('.');
+    expect(JSON.parse(Buffer.from(header, 'base64url').toString())).toEqual({ alg: 'HS256', typ: 'JWT' });
+    expect(signature).toBe(createHmac('sha256', SHORT).update(`${header}.${payload}`).digest('base64url'));
+
+    const verifier = new JwtVerifier({ key: SHORT, allowShortSecret: true, now: nowMs });
+    await expect(verifier.verify(token)).resolves.toMatchObject({ sub: 'u1' });
+    expect(await rejection(verifier.verify(hs256({ sub: 'u1', exp: NOW + 10 }, undefined, 'dev-secreT')))).toBe('invalid signature');
+  });
+
+  it('relaxes the HS384 and HS512 minimums the same way, and never accepts an empty secret', () => {
+    warn();
+    expect(() => new JwtSigner({ key: SHORT, alg: 'HS512' })).toThrow(/64 bytes.*allowShortSecret/);
+    expect(() => new JwtSigner({ key: SHORT, alg: 'HS384', allowShortSecret: true })).not.toThrow();
+    expect(() => new JwtSigner({ key: SHORT, alg: 'HS512', allowShortSecret: true })).not.toThrow();
+    expect(() => new JwtSigner({ key: createSecretKey(Buffer.alloc(0)), allowShortSecret: true })).toThrow(/^(?!.*allowShortSecret).*32 bytes/);
+  });
+
+  it('warns once per secret, the signer and its verifier together, and not for a long enough one', () => {
+    const spy = warn();
+    new JwtSigner({ key: SECRET, allowShortSecret: true });
+    expect(spy).not.toHaveBeenCalled();
+
+    const key = 'only-warned-once'; // 16 bytes, used by no other test: the warning is once per process
+    new JwtSigner({ key, allowShortSecret: true });
+    new JwtSigner({ key, allowShortSecret: true });
+    new JwtVerifier({ key, allowShortSecret: true });
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0][0]).toMatch(/The HS256 secret is 16 bytes, shorter than 32 .*guess it offline/);
+  });
+});
 
 describe('JwtVerifier: HS256', () => {
   const verifier = (options = {}) => new JwtVerifier({ key: SECRET, now: nowMs, ...options });

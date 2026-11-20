@@ -47,6 +47,8 @@ Import the module. Its global guard then requires a signed-in user on every rout
 export class AppModule {}
 ```
 
+`key` is a secret of at least 32 bytes for HS256 (`openssl rand -base64 32`), or a private key. To keep a shorter secret that other services already sign or verify with, add `allowShortSecret: true`: tokens stay plain HS256 with that secret, and startup logs a warning, since anyone holding a token can guess a short secret offline.
+
 Credential providers are ordinary injectable classes that register themselves with `AuthenticationRegistry`:
 
 ```ts
@@ -87,6 +89,31 @@ export class AppController {
   @Get('greeting')
   greeting(@CurrentUser() user: User | null) {
     return user ? `Hello, ${user.email}` : 'Hello, guest';
+  }
+}
+```
+
+### Passwords
+
+`PasswordHasher` (injectable, no setup) hashes with scrypt from `node:crypto`. Pass the stored hash to `verify()` even when there is no user: it then checks a dummy hash, so an unknown email takes as long as a wrong password and the response time doesn't reveal which emails are registered.
+
+```ts
+@Injectable()
+export class CredentialsService {
+  constructor(
+    private readonly users: UsersRepository,
+    private readonly passwordHasher: PasswordHasher,
+  ) {}
+
+  async register(email: string, password: string) {
+    return this.users.create(email, { passwordHash: await this.passwordHasher.hash(password) });
+  }
+
+  /** The user, or `null` for a wrong email or password. */
+  async verify(email: string, password: string) {
+    const found = await this.users.findCredentials(email);
+    const valid = await this.passwordHasher.verify(password, found?.passwordHash);
+    return valid && found ? found.user : null;
   }
 }
 ```
