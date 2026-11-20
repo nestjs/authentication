@@ -4,7 +4,7 @@ import { durationOr, toMs } from '../utils/duration.util.js';
 import type { Duration } from '../interfaces/duration.interface.js';
 import type { JwsAlgorithm, JwtClaims } from '../interfaces/jwt.interface.js';
 import type { JwtSignerOptions } from '../interfaces/jwt-options.interface.js';
-import { algorithmFor, assertSigningKey, signJws, toKeyObject, unsupportedKeyError } from './jws.util.js';
+import { algorithmFor, assertSigningKey, signJws, toKeyObject, unsupportedKeyError, warnShortSecret } from './jws.util.js';
 
 /**
  * Issues signed JWTs. Adds `iat`, `exp`, `jti` and the configured
@@ -24,7 +24,10 @@ export class JwtSigner {
       throw unsupportedKeyError(this.key, 'JwtSigner');
     }
 
-    assertSigningKey(alg, this.key, 'JwtSigner');
+    assertSigningKey(alg, this.key, 'JwtSigner', { allowShortSecret: options.allowShortSecret });
+    if (options.allowShortSecret) {
+      warnShortSecret(alg, this.key, 'JwtSigner');
+    }
     this.alg = alg;
     toMs(options.ttl ?? 0); // an invalid duration fails here, not at the first sign()
   }
@@ -45,6 +48,7 @@ export class JwtSigner {
       { alg: this.alg, typ: this.options.type ?? 'JWT', ...(this.options.kid && { kid: this.options.kid }) },
       payload,
       this.key,
+      { allowShortSecret: this.options.allowShortSecret },
     );
   }
 }

@@ -21,7 +21,8 @@ export interface JwksClientOptions {
 
 export interface JwtVerifierOptions extends ClaimRules {
   /**
-   * A static key: an HMAC secret (at least 32 bytes for HS256), or a public or
+   * A static key: an HMAC secret (at least 32 bytes for HS256, or shorter with
+   * `allowShortSecret`), or a public or
    * private key as a `KeyObject` or PEM text (a string or a `Buffer`). A
    * public key needs `issuer` and `audience`, as a `jwks` does: it is an
    * identity provider's, which signs the tokens of all its clients with it.
@@ -45,11 +46,19 @@ export interface JwtVerifierOptions extends ClaimRules {
   algorithms?: JwsAlgorithm[];
   /** Required `typ` header, e.g. `at+jwt` (RFC 9068). Not checked by default. */
   type?: string;
+  /**
+   * Accept an HMAC `key` shorter than the algorithm's minimum (32 bytes for
+   * HS256), for an existing secret other services also use. Anyone holding a
+   * token can guess a short secret offline, so this logs a warning at
+   * startup. Default `false`.
+   */
+  allowShortSecret?: boolean;
 }
 
 export interface JwtSignerOptions {
   /**
-   * An HMAC secret (at least as long as the hash: 32, 48 or 64 bytes), or an
+   * An HMAC secret (at least as long as the hash: 32, 48 or 64 bytes, or
+   * shorter with `allowShortSecret`), or an
    * RSA, P-256, P-384, P-521 or Ed25519 private key: a `KeyObject`, or PEM
    * text (a string or a `Buffer`). A JWK, or
    * DER, is refused: pass `createPrivateKey({ key: jwk, format: 'jwk' })`.
@@ -70,6 +79,13 @@ export interface JwtSignerOptions {
   type?: string;
   /** Clock in epoch milliseconds, for tests. */
   now?: () => number;
+  /**
+   * Accept an HMAC `key` shorter than the algorithm's minimum (32 bytes for
+   * HS256), for an existing secret other services sign or verify with. Tokens
+   * stay plain HS256 with that secret. Anyone holding a token can guess a
+   * short secret offline, so this logs a warning at startup. Default `false`.
+   */
+  allowShortSecret?: boolean;
 }
 
 export interface JwtBearerProviderOptions extends JwtVerifierOptions {

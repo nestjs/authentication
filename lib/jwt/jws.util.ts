@@ -2,6 +2,7 @@ import {
   KeyObject,
   X509Certificate,
   constants,
+  createHash,
   createHmac,
   createPrivateKey,
   createPublicKey,
@@ -10,6 +11,7 @@ import {
   verify as cryptoVerify,
   timingSafeEqual,
 } from 'node:crypto';
+import { Logger } from '@nestjs/common';
 import { toMs } from '../utils/duration.util.js';
 import type { JwsAlgorithm, JwtClaims, ClaimRules } from '../interfaces/jwt.interface.js';
 import { JwtError } from '../errors/jwt.error.js';
@@ -125,21 +127,33 @@ export function unsupportedKeyError(key: KeyObject, owner: string): TypeError {
   );
 }
 
+/** The minimum HMAC secret per algorithm: the hash's output size (RFC 7518 §3.2). */
+const HMAC_SECRET_BYTES = { HS256: 32, HS384: 48, HS512: 64 } as const;
+
+/** How strictly a key is checked against its algorithm. */
+export interface KeyRules {
+  /**
+   * Accept an HMAC secret shorter than the hash's output (32, 48 or 64
+   * bytes). For an existing secret that other services also sign or verify
+   * with; anyone holding a token can guess a short secret offline.
+   */
+  allowShortSecret?: boolean;
+}
+
 /**
  * Whether `key` is appropriate for `alg`. This is the algorithm/key binding
  * that stops key-confusion attacks: an RSA public key can never be used as
  * an HMAC secret, a P-384 key never verifies ES256, and so on.
  */
-export function keyFits(alg: JwsAlgorithm, key: KeyObject): boolean {
+export function keyFits(alg: JwsAlgorithm, key: KeyObject, { allowShortSecret = false }: KeyRules = {}): boolean {
   const details = key.asymmetricKeyDetails;
   switch (alg) {
-    // A secret at least as long as the hash's output (RFC 7518 §3.2).
+    // A secret at least as long as the hash's output (RFC 7518 §3.2), unless the app opted into a
+    // shorter one it already has (`allowShortSecret`). Empty is never a secret.
     case 'HS256':
-      return key.type === 'secret' && (key.symmetricKeySize ?? 0) >= 32;
     case 'HS384':
-      return key.type === 'secret' && (key.symmetricKeySize ?? 0) >= 48;
     case 'HS512':
-      return key.type === 'secret' && (key.symmetricKeySize ?? 0) >= 64;
+      return key.type === 'secret' && (key.symmetricKeySize ?? 0) >= (allowShortSecret ? 1 : HMAC_SECRET_BYTES[alg]);
     // One RSA key serves both paddings and every hash: the header names which, and the verifier's
     // `algorithms` decide which are accepted. Node's `rsa-pss` keys are refused (asymmetricKeyType
     // 'rsa-pss'): they restrict their own hash and salt, which a JWKS cannot even publish.
@@ -184,22 +198,55 @@ const REQUIREMENTS: Record<JwsAlgorithm, string> = {
 export const isHmac = (alg: JwsAlgorithm) => alg.startsWith('HS');
 
 /** Throws a `TypeError` (configuration, not a token) unless `key` can serve `alg`. */
-export function assertKeyFits(alg: JwsAlgorithm, key: KeyObject, owner: string): void {
-  if (!keyFits(alg, key)) {
-    throw new TypeError(`${owner}: the key is not a valid ${alg} key; ${alg} needs ${REQUIREMENTS[alg]}.`);
+export function assertKeyFits(alg: JwsAlgorithm, key: KeyObject, owner: string, rules: KeyRules = {}): void {
+  if (!keyFits(alg, key, rules)) {
+    // A secret that is merely short names the opt-in: an app that must keep the secret it has (other
+    // services verify with it) should not have to drop the package to do so.
+    const short = isHmac(alg) && key.type === 'secret' && (key.symmetricKeySize ?? 0) > 0;
+    throw new TypeError(
+      `${owner}: the key is not a valid ${alg} key; ${alg} needs ${REQUIREMENTS[alg]}.` +
+        (short
+          ? ` To keep an existing shorter secret (${key.symmetricKeySize} bytes), set \`allowShortSecret: true\` ` +
+            'next to the key; a short secret can be guessed offline from any token.'
+          : ''),
+    );
   }
 }
 
+/** Digests of the short secrets already warned about. */
+const warnedShortSecrets = new Set<string>();
+
+/**
+ * Once per process and secret: a short secret is a choice the logs should show, not hide. The
+ * signer and the verifier derived from it hold the same secret, so they warn once between them.
+ */
+export function warnShortSecret(alg: JwsAlgorithm, key: KeyObject, owner: string): void {
+  if (!isHmac(alg) || key.type !== 'secret') {
+    return;
+  }
+  const size = key.symmetricKeySize ?? 0;
+  const minimum = HMAC_SECRET_BYTES[alg as keyof typeof HMAC_SECRET_BYTES];
+  const digest = createHash('sha256').update(key.export()).digest('hex');
+  if (size >= minimum || warnedShortSecrets.has(digest)) {
+    return;
+  }
+  warnedShortSecrets.add(digest);
+  new Logger(owner).warn(
+    `The ${alg} secret is ${size} bytes, shorter than ${minimum} (\`allowShortSecret: true\`). Anyone holding a ` +
+      `token can guess it offline and then sign their own. Replace it with \`openssl rand -base64 ${minimum}\` when you can.`,
+  );
+}
+
 /** Throws a `TypeError` (configuration, not a token) unless `key` can sign `alg`. */
-export function assertSigningKey(alg: JwsAlgorithm, key: KeyObject, owner: string): void {
-  assertKeyFits(alg, key, owner);
+export function assertSigningKey(alg: JwsAlgorithm, key: KeyObject, owner: string, rules: KeyRules = {}): void {
+  assertKeyFits(alg, key, owner, rules);
   if (!isHmac(alg) && key.type !== 'private') {
     throw new TypeError(`${owner}: ${alg} signing needs a private key.`);
   }
 }
 
-export function signJws(header: JwsHeader & { alg: JwsAlgorithm }, payload: object, key: KeyObject): string {
-  assertSigningKey(header.alg, key, 'JwtSigner');
+export function signJws(header: JwsHeader & { alg: JwsAlgorithm }, payload: object, key: KeyObject, rules: KeyRules = {}): string {
+  assertSigningKey(header.alg, key, 'JwtSigner', rules);
 
   const input = `${encode(header)}.${encode(payload)}`;
   const data = Buffer.from(input);
@@ -268,9 +315,9 @@ export function decodeJws(token: string): DecodedJws {
   };
 }
 
-export function verifySignature(alg: JwsAlgorithm, key: KeyObject, decoded: DecodedJws): void {
+export function verifySignature(alg: JwsAlgorithm, key: KeyObject, decoded: DecodedJws, rules: KeyRules = {}): void {
   const publicKey = key.type === 'private' ? createPublicKey(key) : key;
-  if (!keyFits(alg, publicKey)) {
+  if (!keyFits(alg, publicKey, rules)) {
     throw new JwtError(`key is not a valid ${alg} key`);
   }
 
