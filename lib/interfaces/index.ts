@@ -17,6 +17,8 @@ export * from './mfa-store.interface.js';
 export * from './oidc-provider.interface.js';
 export * from './oidc-state-store.interface.js';
 export * from './oidc.interface.js';
+export * from './passkey-store.interface.js';
+export * from './passkey.interface.js';
 export * from './password-hasher-options.interface.js';
 export * from './password-reset.interface.js';
 export * from './refresh-token-options.interface.js';
