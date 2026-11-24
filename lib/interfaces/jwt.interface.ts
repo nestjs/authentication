@@ -32,7 +32,14 @@ export interface JwtClaims {
 }
 
 export interface ClaimRules {
-  issuer?: string;
+  /**
+   * Accepted `iss` values, compared exactly: no case folding, trailing
+   * slash or prefix match. A list is for an identity provider that issues
+   * under more than one name: Google signs ID tokens as either
+   * `https://accounts.google.com` or `accounts.google.com`. A token without
+   * `iss` is rejected.
+   */
+  issuer?: string | readonly string[];
   /**
    * Accepted `aud` values. `false` accepts any audience, for tokens that
    * carry none (check the claim that names your client in `validate()`).

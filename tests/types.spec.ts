@@ -20,6 +20,9 @@ import {
   type IssuedTokens,
   type TokenPair,
   type TokenService,
+  type JwtBearerProviderOptions,
+  type JwtSignerOptions,
+  type JwtVerifierOptions,
 } from '../lib/index.js';
 import { type User } from './fixtures.js';
 
@@ -178,6 +181,16 @@ export const namedKeys: AuthenticationModuleOptions = {
 export const accessTokensOnly: AuthenticationModuleOptions = { accessToken: { key: 'k'.repeat(32) }, refreshToken: false };
 // @ts-expect-error `true` is not a value of `refreshToken`
 export const refreshTrue: AuthenticationModuleOptions = { refreshToken: true };
+
+// A verifier takes a list of issuers (a readonly tuple too); a signer, and the module's
+// `accessToken`, take one: a token has a single `iss`.
+const googleIssuers = ['https://accounts.google.com', 'accounts.google.com'] as const;
+export const listedIssuers: JwtVerifierOptions = { jwks: 'https://www.googleapis.com/oauth2/v3/certs', issuer: googleIssuers, audience: 'client' };
+export const bearerIssuers: JwtBearerProviderOptions = { issuer: ['https://idp.test', 'idp.test'] };
+// @ts-expect-error a signer issues under one name
+export const signerIssuers: JwtSignerOptions = { key: 'k'.repeat(32), issuer: ['https://idp.test', 'idp.test'] };
+// @ts-expect-error the module's `accessToken` is a signer's options
+export const moduleIssuers: AuthenticationModuleOptions = { accessToken: { key: 'k'.repeat(32), issuer: googleIssuers } };
 
 export async function issuedTypes(tokens: TokenService) {
   // Without the `refreshTokens: false` declaration, issue() still returns a pair.
