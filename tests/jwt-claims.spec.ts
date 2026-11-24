@@ -20,6 +20,7 @@ import {
 } from '../lib/index.js';
 import { PROVIDER_INIT } from '../lib/providers/authentication.provider.js';
 import { AUTHENTICATION_MODULE_OPTIONS } from '../lib/authentication.constants.js';
+import { validateClaims } from '../lib/jwt/jws.util.js';
 import { storageWith } from './fixtures.js';
 
 const NOW = 1_800_000_000;
@@ -114,6 +115,13 @@ describe('JwtVerifier: claims', () => {
     expect(await refused(api.verify(hs256({ exp: NOW + 10, aud: ['API'] })))).toBe('unexpected audience');
 
     await expect(verifier({ audience: false }).verify(hs256({ exp: NOW + 10, aud: 'anything' }))).resolves.toBeTruthy();
+  });
+
+  it('never matches a missing `iss` against an issuer list, even one the constructor would refuse', () => {
+    // The constructor's check is the first line; the claim check holds on its own.
+    expect(() => validateClaims({ exp: NOW + 10 }, { issuer: [undefined] as never, now: nowMs })).toThrow('unexpected issuer');
+    expect(() => validateClaims({ exp: NOW + 10 }, { issuer: new Array(1) as never, now: nowMs })).toThrow('unexpected issuer');
+    expect(() => validateClaims({ exp: NOW + 10, iss: 'https://idp.test' }, { issuer: [], now: nowMs })).toThrow('unexpected issuer');
   });
 
   it('compares `typ` without regard to case, and refuses a token without one when a type is set', async () => {
@@ -366,6 +374,22 @@ describe('JwtBearerProvider', () => {
 
     const old = hs256({ sub: 'u1', exp: NOW + 600, iat: NOW - 120 });
     await expect(provider.authenticate(http({ authorization: `Bearer ${old}` }))).rejects.toMatchObject({ message: 'token too old' });
+  });
+
+  it('takes a list of issuers, its own or in place of the module’s `accessToken` issuer', async () => {
+    const issued = (iss?: string) => `Bearer ${token({ sub: 'u1', exp: NOW + 60, ...(iss !== undefined && { iss }) })}`;
+
+    const own = new Bearer({ key: SECRET, issuer: ['https://idp.test', 'idp.test'], now: nowMs });
+    await expect(own.authenticate(http({ authorization: issued('idp.test') }))).resolves.toMatchObject({ user: { id: 'u1' } });
+    expect((await rejection(own.authenticate(http({ authorization: issued('https://evil.test') })))).message).toBe('unexpected issuer');
+    expect((await rejection(own.authenticate(http({ authorization: issued() })))).message).toBe('unexpected issuer');
+
+    // An app moving to a new issuer name accepts tokens of both while the old ones expire.
+    const renamed = new Bearer({ issuer: ['https://old.test', 'https://new.test'] });
+    renamed[PROVIDER_INIT]((() => ({ accessToken: { key: SECRET, issuer: 'https://new.test', now: nowMs } })) as never);
+    await expect(renamed.authenticate(http({ authorization: issued('https://old.test') }))).resolves.toMatchObject({ user: { id: 'u1' } });
+    await expect(renamed.authenticate(http({ authorization: issued('https://new.test') }))).resolves.toMatchObject({ user: { id: 'u1' } });
+    expect((await rejection(renamed.authenticate(http({ authorization: issued('https://other.test') })))).message).toBe('unexpected issuer');
   });
 });
 

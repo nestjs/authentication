@@ -175,6 +175,15 @@ describe('JwtVerifier: HS256', () => {
       expect(await rejection(pinned.verify(hs256({ iss: 'https://idp.test', aud, exp: NOW + 10 })))).toBe('unexpected audience');
     }
     await expect(pinned.verify(hs256({ iss: 'https://idp.test', aud: ['other', 'my-api'], exp: NOW + 10 }))).resolves.toBeTruthy();
+
+    // A list of issuers is matched the same way, entry by entry.
+    const listed = verifier({ issuer: ['https://idp.test', 'idp.test'], audience: 'my-api' });
+    for (const iss of ['https://idp.test/', 'https://idp.test.evil', 'HTTPS://IDP.TEST', 'IDP.TEST', 'idp.tes', 'http://idp.test', '', 'https://idp.test idp.test']) {
+      expect(await rejection(listed.verify(hs256({ iss, aud: 'my-api', exp: NOW + 10 })))).toBe('unexpected issuer');
+    }
+    for (const iss of ['https://idp.test', 'idp.test']) {
+      await expect(listed.verify(hs256({ iss, aud: 'my-api', exp: NOW + 10 }))).resolves.toMatchObject({ iss });
+    }
   });
 
   it('checks time claims with leeway, and requires exp by default', async () => {
@@ -272,6 +281,52 @@ describe('JwtSigner + JwtVerifier: asymmetric', () => {
     // The app's own keys, a secret or a private key, need neither.
     expect(() => new JwtVerifier({ key: keys.rsa.privateKey })).not.toThrow();
     expect(() => new JwtVerifier({ key: SECRET })).not.toThrow();
+  });
+
+  it('takes a list of issuers, for a provider that signs under more than one name, and still refuses a token without `iss`', async () => {
+    // Google's ID tokens carry either issuer.
+    const issuer = ['https://accounts.google.com', 'accounts.google.com'] as const;
+    const token = (iss?: string) =>
+      new JwtSigner({ key: keys.rsa.privateKey, issuer: iss, audience: 'client', now: nowMs }).sign({ sub: 'u1' });
+
+    const google = new JwtVerifier({ key: keys.rsa.publicKey, issuer, audience: 'client', now: nowMs });
+    await expect(google.verify(token('https://accounts.google.com'))).resolves.toMatchObject({ iss: 'https://accounts.google.com' });
+    await expect(google.verify(token('accounts.google.com'))).resolves.toMatchObject({ iss: 'accounts.google.com' });
+    expect(await rejection(google.verify(token('https://idp.test')))).toBe('unexpected issuer');
+    expect(await rejection(google.verify(token()))).toBe('unexpected issuer');
+    const listInput = `${b64({ alg: 'RS256' })}.${b64({ iss: ['accounts.google.com'], aud: 'client', exp: NOW + 10 })}`;
+    expect(await rejection(google.verify(`${listInput}.${sign256(listInput, keys.rsa.privateKey)}`))).toBe('invalid iss');
+
+    // The list is copied: changing it afterwards changes nothing.
+    const mutable = ['https://idp.test'];
+    const copied = new JwtVerifier({ key: keys.rsa.publicKey, issuer: mutable, audience: 'client', now: nowMs });
+    mutable.push('accounts.google.com');
+    expect(await rejection(copied.verify(token('accounts.google.com')))).toBe('unexpected issuer');
+  });
+
+  it('refuses an `issuer` list that is empty, or holds anything but non-empty strings, whatever the key', () => {
+    const message = 'JwtVerifier: `issuer` must be a string or a non-empty array of non-empty strings.';
+    const trailingHole = ['https://idp.test'];
+    trailingHole.length = 2;
+    const invalid: unknown[] = [
+      [],
+      [undefined],
+      ['https://idp.test', undefined],
+      ['https://idp.test', ''],
+      [1],
+      [null],
+      [['https://idp.test']],
+      new Array(1), // `every()` skips holes
+      trailingHole,
+      null,
+      42,
+      {},
+    ];
+    for (const issuer of invalid) {
+      expect(() => new JwtVerifier({ key: SECRET, issuer: issuer as never })).toThrow(message);
+      expect(() => new JwtVerifier({ key: keys.rsa.publicKey, issuer: issuer as never, audience: 'client' })).toThrow(message);
+      expect(() => new JwtVerifier({ jwks: 'https://idp.test/jwks', issuer: issuer as never, audience: 'client' })).toThrow(message);
+    }
   });
 
   it('refuses a key given as DER, or base64 of it, which would otherwise be an HS256 secret anyone can derive', () => {
@@ -648,6 +703,19 @@ describe('JwksClient', () => {
     const error = await verifier.verify(sign('RS256', keys.rsa.privateKey, 'rsa-1')).catch((e: Error) => e);
     expect(error).not.toBeInstanceOf(JwtError);
     expect((error as Error).message).toBe(`JWKS ${uri} is unavailable: it has no keys array`);
+  });
+
+  it('verifies the issuers of a list with one key set, as Google’s two need', async () => {
+    const issuer = ['https://accounts.google.com', 'accounts.google.com'];
+    const verifier = new JwtVerifier({ jwks: new JwksClient(uri), issuer, audience: idp.audience, now: nowMs });
+    const signed = (iss?: string) =>
+      new JwtSigner({ key: keys.rsa.privateKey, kid: 'rsa-1', issuer: iss, audience: idp.audience, now: nowMs }).sign({ sub: 'u1' });
+
+    await expect(verifier.verify(signed('https://accounts.google.com'))).resolves.toMatchObject({ sub: 'u1' });
+    await expect(verifier.verify(signed('accounts.google.com'))).resolves.toMatchObject({ sub: 'u1' });
+    expect(await rejection(verifier.verify(signed(idp.issuer)))).toBe('unexpected issuer');
+    expect(await rejection(verifier.verify(signed()))).toBe('unexpected issuer');
+    expect(requests).toBe(1);
   });
 
   it('needs an issuer and an audience: an identity provider signs tokens for all of its clients', async () => {

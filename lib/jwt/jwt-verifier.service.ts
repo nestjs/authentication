@@ -31,6 +31,8 @@ export class JwtVerifier {
     if (!!options.key === !!options.jwks) {
       throw new TypeError('JwtVerifier: pass exactly one of `key` or `jwks`.');
     }
+    // A copy: a list changed after construction must not change which tokens verify.
+    this.options = { ...options, issuer: acceptedIssuers(options.issuer) };
 
     let given: KeyObject | undefined;
     if (options.key) {
@@ -100,7 +102,7 @@ export class JwtVerifier {
 
 /** Throws unless the tokens of a key the app does not own are pinned to their issuer and to the app. */
 function requireIssuerAndAudience(options: JwtVerifierOptions, what: string) {
-  if (typeof options.issuer === 'string' && options.audience !== undefined) {
+  if (options.issuer !== undefined && options.audience !== undefined) {
     return;
   }
   throw new TypeError(
@@ -109,6 +111,25 @@ function requireIssuerAndAudience(options: JwtVerifierOptions, what: string) {
       'too. For tokens that carry no audience, pass `audience: false` and check the claim that names your ' +
       'client in `validate()`.',
   );
+}
+
+/**
+ * The `issuer` option, checked and copied: a string, or a non-empty list of
+ * non-empty strings. An empty list would reject every token; an entry that
+ * is not a string, or is empty, is a configuration mistake (an unset
+ * environment variable, a split on a trailing comma) that must not decide
+ * which tokens verify.
+ */
+function acceptedIssuers(issuer: unknown): string | readonly string[] | undefined {
+  if (issuer === undefined || typeof issuer === 'string') {
+    return issuer;
+  }
+  // Copied before the check: `every()` skips the holes of a sparse array, which the copy fills with `undefined`.
+  const list: unknown[] = Array.isArray(issuer) ? [...issuer] : [];
+  if (list.length > 0 && list.every((value) => typeof value === 'string' && value !== '')) {
+    return Object.freeze(list as string[]);
+  }
+  throw new TypeError('JwtVerifier: `issuer` must be a string or a non-empty array of non-empty strings.');
 }
 
 /**

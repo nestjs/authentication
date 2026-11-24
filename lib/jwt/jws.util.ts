@@ -414,8 +414,11 @@ export function validateClaims(claims: JwtClaims, rules: ClaimRules): void {
     }
   }
 
-  if (rules.issuer !== undefined && claims.iss !== rules.issuer) {
-    throw new JwtError('unexpected issuer');
+  if (rules.issuer !== undefined) {
+    const accepted = typeof rules.issuer === 'string' ? [rules.issuer] : rules.issuer;
+    if (typeof claims.iss !== 'string' || !accepted.includes(claims.iss)) {
+      throw new JwtError('unexpected issuer');
+    }
   }
 
   if (rules.audience !== undefined && rules.audience !== false) {
