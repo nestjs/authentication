@@ -148,7 +148,8 @@ export class SignInService {
   /**
    * Ends this browser's session, pending or not, and clears its cookie.
    * `false` when the browser had no live session (a bearer-token client, an
-   * expired cookie).
+   * expired cookie), or lost it meanwhile to another request (revoked, or
+   * rotated: that request's new session is not ended).
    */
   async signOut(): Promise<boolean> {
     const exchange = this.scope.exchange();
@@ -161,8 +162,8 @@ export class SignInService {
     this.setCookie(exchange, this.sessions.clearCookie());
     // Deleted whatever this instance makes of it: idle here, it may still be live for another
     // instance (its clock, or another idleTtl during a rolling deploy).
-    await this.sessions.discard(sha256(token));
-    if (!session) {
+    const deleted = await this.sessions.discard(sha256(token));
+    if (!session || !deleted) {
       return false;
     }
 

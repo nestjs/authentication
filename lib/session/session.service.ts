@@ -169,14 +169,20 @@ export class SessionService {
   /**
    * Ends one of `userId`'s sessions. Resolves `false` when the id is unknown
    * or belongs to another user, so a route can pass an id from the URL
-   * without checking ownership first.
+   * without checking ownership first. Also `false` when the session was gone
+   * by the time it was deleted: revoked by another request, or rotated, whose
+   * new session this call did not end (`revokeAll()` ends that one too).
    */
   async revoke(sessionId: string, { userId }: { userId: string }): Promise<boolean> {
     const record = typeof sessionId === 'string' ? await this.storage.sessions.getSession(sessionId) : undefined;
     if (!record || record.userId !== userId) {
       return false;
     }
-    await this.storage.sessions.deleteSession(record.id);
+    // Of this revocation and a rotation of the session (or another revocation), only the one that
+    // deletes it wins: a rotation that won leaves its new session behind.
+    if (!(await this.storage.sessions.deleteSession(record.id))) {
+      return false;
+    }
     this.events.emit({ type: 'sign-out', userId, sessionId: record.id });
     return true;
   }
@@ -258,9 +264,12 @@ export class SessionService {
     return serializeCookie(this.cookieName, '', { ...this.options.cookie, maxAge: 0 });
   }
 
-  /** @internal Deletes a session by id, for sessions whose user is gone. */
-  async discard(sessionId: string): Promise<void> {
-    await this.storage.sessions.deleteSession(sessionId);
+  /**
+   * @internal Deletes a session by id (a sign-out, a session whose user is
+   * gone), resolving whether this call deleted it.
+   */
+  discard(sessionId: string): Promise<boolean> {
+    return this.storage.sessions.deleteSession(sessionId);
   }
 
   /**

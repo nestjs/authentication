@@ -50,6 +50,22 @@ class JoiningSessionStore extends InMemorySessionStore {
   }
 }
 
+/** Holds the next `getSession()` once it has read the record: `read` settles then, `release()` lets it return. */
+function holdNextRead(store: InMemorySessionStore) {
+  const getSession = store.getSession.bind(store);
+  let release!: () => void;
+  let signal!: () => void;
+  const held = new Promise<void>((resolve) => (release = resolve));
+  const read = new Promise<void>((resolve) => (signal = resolve));
+  vi.spyOn(store, 'getSession').mockImplementationOnce(async (id) => {
+    const record = await getSession(id);
+    signal();
+    await held;
+    return record;
+  });
+  return { read, release };
+}
+
 describe('SessionService', () => {
   it('writes lastActiveAt at most once per touchInterval', async () => {
     const { sessions, store, tick } = sessionsWith();
@@ -242,6 +258,22 @@ describe('SessionService', () => {
     expect(seen).toEqual([]);
   });
 
+  it('revoke() resolves false, publishing nothing, when a rotation took the session between its read and its delete', async () => {
+    const { sessions, store, seen } = sessionsWith();
+    const issued = await sessions.create('u1');
+    const { read, release } = holdNextRead(store);
+
+    const revoked = sessions.revoke(issued.session.id, { userId: 'u1' });
+    await read;
+    const rotated = await sessions.rotate(issued.session);
+    release();
+
+    await expect(revoked).resolves.toBe(false);
+    expect(seen).toEqual([]);
+    // The rotation won: its new session lives on, for the caller to list and revoke.
+    expect(await sessions.list('u1')).toEqual([expect.objectContaining({ id: rotated!.session.id })]);
+  });
+
   it('revokeAll({ except }) keeps that one session, and only for that user', async () => {
     const { sessions } = sessionsWith();
     const keep = await sessions.create('u1');
@@ -404,6 +436,24 @@ describe('SignInService', () => {
     const signedOut = await inRequest(cookieHeader(issued.cookie), () => signIn.signOut());
     expect(signedOut.result).toBe(false);
     await expect(store.getSession(issued.session.id)).resolves.toBeUndefined();
+  });
+
+  it('signOut() resolves false, publishing nothing, when a rotation took the session between its read and its delete', async () => {
+    const { signIn, sessions, store, inRequest, cookieHeader, seen } = setup();
+    const { result: issued } = await inRequest({}, () => signIn.signIn('u1'));
+    seen.length = 0;
+    const { read, release } = holdNextRead(store);
+
+    const signedOut = inRequest(cookieHeader(issued.cookie), () => signIn.signOut());
+    await read;
+    const rotated = await sessions.rotate(issued.session);
+    release();
+
+    const { result, cookies } = await signedOut;
+    expect(result).toBe(false);
+    expect(cookies).toEqual([expect.stringMatching(/^sid=; Max-Age=0; /)]);
+    expect(seen).toEqual([]);
+    expect(await sessions.validate(rotated!.token)).toMatchObject({ id: rotated!.session.id });
   });
 
   it('rotateSession() gives the browser a new cookie for the same user, and null without a session', async () => {
