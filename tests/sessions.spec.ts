@@ -468,6 +468,26 @@ describe('SignInService', () => {
     await expect(sessions.validate(rotated!.token)).resolves.not.toBeNull();
   });
 
+  it('rotateSession() keeps the metadata, or replaces it with the metadata given, and changes nothing else', async () => {
+    const { signIn, inRequest, cookieHeader, mfa, sessions } = setup();
+    const { secret } = await mfa.enroll('u1', 'ada@example.com');
+    await mfa.confirm('u1', hotp(base32Decode(secret), Math.floor(Date.now() / 30_000)));
+    const { result: issued } = await inRequest({}, () => signIn.signIn('u1', { metadata: { version: 1 } }));
+    expect(issued.session).toMatchObject({ mfa: 'pending', metadata: { version: 1 } });
+
+    const { result: kept } = await inRequest(cookieHeader(issued.cookie), () => signIn.rotateSession(), 'GET');
+    expect(kept!.session.metadata).toEqual({ version: 1 });
+
+    // A caller without types can't verify the second factor through it.
+    const changes = { metadata: { version: 2 }, mfa: 'verified' } as { metadata: Record<string, unknown> };
+    const second = await inRequest(cookieHeader(kept!.cookie), () => signIn.rotateSession(changes), 'GET');
+    const replaced = second.result!;
+    expect(second.cookies).toEqual([replaced.cookie]);
+    expect(replaced.session).toMatchObject({ userId: 'u1', mfa: 'pending', metadata: { version: 2 } });
+    await expect(sessions.validate(kept!.token)).resolves.toBeNull();
+    expect(await sessions.validate(replaced.token)).toMatchObject({ mfa: 'pending', metadata: { version: 2 } });
+  });
+
   it('completeMfa() needs a code, and a session, before it asks the authenticator', async () => {
     const { signIn, inRequest, mfa } = setup();
     const verify = vi.spyOn(mfa, 'verifyTotp');
