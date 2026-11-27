@@ -571,6 +571,41 @@ for (const target of targets) {
         await http().post('/token/refresh').send({ refreshToken: rotated.refreshToken }).expect(401);
       });
 
+      // Parallel refreshes of a reused token each revoke the family, alongside a sign-out
+      // everywhere: on PostgreSQL, multi-row UPDATEs that lock the rows in different orders deadlock.
+      it.runIf(Boolean(target.postgres) && adapter === adapters[0].name)(
+        'revokes one family from parallel calls without a deadlock',
+        async () => {
+          const store = app.get(database.store) as {
+            saveRefreshToken(record: object): Promise<void>;
+            revokeRefreshTokenFamily(familyId: string): Promise<void>;
+            revokeUserRefreshTokens(userId: string): Promise<void>;
+          };
+          const t0 = Date.now();
+          const errors: string[] = [];
+          for (let round = 0; round < 150; round++) {
+            const userId = `deadlock-${round}-${t0}`;
+            const familyId = sha256(userId);
+            for (let i = 0; i < 40; i++) {
+              await store.saveRefreshToken({
+                id: sha256(`${userId}.${i}`),
+                familyId,
+                userId,
+                createdAt: new Date(t0),
+                expiresAt: new Date(t0 + 60_000),
+                familyExpiresAt: new Date(t0 + 120_000),
+              });
+            }
+            const calls = [...Array.from({ length: 8 }, () => store.revokeRefreshTokenFamily(familyId)), store.revokeUserRefreshTokens(userId)];
+            for (const result of await Promise.allSettled(calls)) {
+              if (result.status === 'rejected') errors.push(String((result.reason as Error).message));
+            }
+          }
+          expect(errors).toEqual([]);
+        },
+        120_000,
+      );
+
       it('stores the TOTP secret encrypted and recovery codes hashed, and runs the second factor on the table', async () => {
         const user = await accounts.add();
         const { cookie } = await signIn(user.email);
