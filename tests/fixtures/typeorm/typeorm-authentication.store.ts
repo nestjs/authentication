@@ -115,7 +115,20 @@ export class TypeOrmAuthenticationStore
   async saveRefreshToken(record: RefreshTokenRecord): Promise<void> {
     const claims = (record.claims ?? null) as Record<string, Json> | null;
     await this.manager.insert(RefreshTokenEntity, { ...record, usedAt: record.usedAt ?? null, claims });
-    await this.manager.delete(RefreshTokenEntity, { familyExpiresAt: LessThanOrEqual(record.createdAt) });
+    // Locked in id order, like the revocations: otherwise revoking an expired family, which
+    // this deletes, can deadlock with it.
+    const expired = this.manager
+      .createQueryBuilder(RefreshTokenEntity, 'expired')
+      .select('expired.id')
+      .where('expired.familyExpiresAt <= :at', { at: record.createdAt })
+      .orderBy('expired.id')
+      .setLock('pessimistic_write');
+    await this.manager
+      .createQueryBuilder()
+      .delete()
+      .from(RefreshTokenEntity)
+      .where(`id IN (${expired.getQuery()})`, expired.getParameters())
+      .execute();
   }
 
   async markRefreshTokenUsed(id: string, at: Date): Promise<boolean> {
@@ -125,7 +138,7 @@ export class TypeOrmAuthenticationStore
   }
 
   async revokeRefreshTokenFamily(familyId: string): Promise<void> {
-    await this.manager.update(RefreshTokenEntity, { familyId }, { revoked: true });
+    await this.revokeRefreshTokens('familyId', familyId);
   }
 
   isRefreshTokenFamilyRevoked(familyId: string): Promise<boolean> {
@@ -133,7 +146,27 @@ export class TypeOrmAuthenticationStore
   }
 
   async revokeUserRefreshTokens(userId: string): Promise<void> {
-    await this.manager.update(RefreshTokenEntity, { userId }, { revoked: true });
+    await this.revokeRefreshTokens('userId', userId);
+  }
+
+  /**
+   * Locks the rows in id order before updating them. Parallel refreshes of a reused token each
+   * revoke the family, and two multi-row UPDATEs that lock the same rows in different orders
+   * deadlock: the loser would answer with a 500 instead of a 401.
+   */
+  private async revokeRefreshTokens(column: 'familyId' | 'userId', value: string): Promise<void> {
+    const locked = this.manager
+      .createQueryBuilder(RefreshTokenEntity, 'locked')
+      .select('locked.id')
+      .where(`locked.${column} = :value`, { value })
+      .orderBy('locked.id')
+      .setLock('pessimistic_write');
+    await this.manager
+      .createQueryBuilder()
+      .update(RefreshTokenEntity)
+      .set({ revoked: true })
+      .where(`id IN (${locked.getQuery()})`, locked.getParameters())
+      .execute();
   }
 
   // Authenticators, recovery codes and failed attempts

@@ -16,7 +16,7 @@ import {
   type TotpRecord,
 } from '../../../lib/index.js';
 import { InjectDrizzle } from '@nestjs/drizzle';
-import { and, desc, eq, gt, isNull, lt, lte, or, sql } from 'drizzle-orm';
+import { and, desc, eq, gt, inArray, isNull, lt, lte, or, sql, type SQL } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import {
   emailTokens,
@@ -101,7 +101,15 @@ export class DrizzleAuthenticationStore
 
   async saveRefreshToken(record: RefreshTokenRecord): Promise<void> {
     await this.db.insert(refreshTokens).values(record);
-    await this.db.delete(refreshTokens).where(lte(refreshTokens.familyExpiresAt, record.createdAt));
+    // Locked in id order, like the revocations: otherwise revoking an expired family, which
+    // this deletes, can deadlock with it.
+    const expired = this.db
+      .select({ id: refreshTokens.id })
+      .from(refreshTokens)
+      .where(lte(refreshTokens.familyExpiresAt, record.createdAt))
+      .orderBy(refreshTokens.id)
+      .for('update');
+    await this.db.delete(refreshTokens).where(inArray(refreshTokens.id, expired));
   }
 
   async markRefreshTokenUsed(id: string, at: Date): Promise<boolean> {
@@ -115,7 +123,7 @@ export class DrizzleAuthenticationStore
   }
 
   async revokeRefreshTokenFamily(familyId: string): Promise<void> {
-    await this.db.update(refreshTokens).set({ revoked: true }).where(eq(refreshTokens.familyId, familyId));
+    await this.revokeRefreshTokens(eq(refreshTokens.familyId, familyId));
   }
 
   async isRefreshTokenFamilyRevoked(familyId: string): Promise<boolean> {
@@ -128,7 +136,17 @@ export class DrizzleAuthenticationStore
   }
 
   async revokeUserRefreshTokens(userId: string): Promise<void> {
-    await this.db.update(refreshTokens).set({ revoked: true }).where(eq(refreshTokens.userId, userId));
+    await this.revokeRefreshTokens(eq(refreshTokens.userId, userId));
+  }
+
+  /**
+   * Locks the rows in id order before updating them. Parallel refreshes of a reused token each
+   * revoke the family, and two multi-row UPDATEs that lock the same rows in different orders
+   * deadlock: the loser would answer with a 500 instead of a 401.
+   */
+  private async revokeRefreshTokens(rows: SQL): Promise<void> {
+    const locked = this.db.select({ id: refreshTokens.id }).from(refreshTokens).where(rows).orderBy(refreshTokens.id).for('update');
+    await this.db.update(refreshTokens).set({ revoked: true }).where(inArray(refreshTokens.id, locked));
   }
 
   // Authenticators, recovery codes and failed attempts
