@@ -115,7 +115,20 @@ export class TypeOrmAuthenticationStore
   async saveRefreshToken(record: RefreshTokenRecord): Promise<void> {
     const claims = (record.claims ?? null) as Record<string, Json> | null;
     await this.manager.insert(RefreshTokenEntity, { ...record, usedAt: record.usedAt ?? null, claims });
-    await this.manager.delete(RefreshTokenEntity, { familyExpiresAt: LessThanOrEqual(record.createdAt) });
+    // Locked in id order, like the revocations: otherwise revoking an expired family, which
+    // this deletes, can deadlock with it.
+    const expired = this.manager
+      .createQueryBuilder(RefreshTokenEntity, 'expired')
+      .select('expired.id')
+      .where('expired.familyExpiresAt <= :at', { at: record.createdAt })
+      .orderBy('expired.id')
+      .setLock('pessimistic_write');
+    await this.manager
+      .createQueryBuilder()
+      .delete()
+      .from(RefreshTokenEntity)
+      .where(`id IN (${expired.getQuery()})`, expired.getParameters())
+      .execute();
   }
 
   async markRefreshTokenUsed(id: string, at: Date): Promise<boolean> {

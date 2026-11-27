@@ -606,6 +606,56 @@ for (const target of targets) {
         120_000,
       );
 
+      // A family past its lifetime stays until the next save sweeps it. Revoking it (a reuse of a
+      // spent token, a sign-out) while other users' saves sweep it locks the same rows.
+      it.runIf(Boolean(target.postgres) && adapter === adapters[0].name)(
+        'revokes an expired family while saves sweep it without a deadlock',
+        async () => {
+          const store = app.get(database.store) as {
+            saveRefreshToken(record: object): Promise<void>;
+            revokeRefreshTokenFamily(familyId: string): Promise<void>;
+            revokeUserRefreshTokens(userId: string): Promise<void>;
+          };
+          const t0 = Date.now();
+          const errors: string[] = [];
+          for (let round = 0; round < 60; round++) {
+            const userId = `sweep-${round}-${t0}`;
+            const familyId = sha256(userId);
+            for (let i = 0; i < 40; i++) {
+              await store.saveRefreshToken({
+                id: sha256(`${userId}.${i}`),
+                familyId,
+                userId,
+                createdAt: new Date(t0 - 7_200_000),
+                expiresAt: new Date(t0 - 3_600_000),
+                familyExpiresAt: new Date(t0 - 1_000),
+              });
+            }
+            const now = Date.now();
+            const saves = Array.from({ length: 4 }, (_, i) =>
+              store.saveRefreshToken({
+                id: sha256(`${userId}.other.${i}`),
+                familyId: sha256(`${userId}.other.${i}`),
+                userId: `${userId}-other`,
+                createdAt: new Date(now),
+                expiresAt: new Date(now + 60_000),
+                familyExpiresAt: new Date(now + 120_000),
+              }),
+            );
+            const calls = [
+              ...Array.from({ length: 4 }, () => store.revokeRefreshTokenFamily(familyId)),
+              store.revokeUserRefreshTokens(userId),
+              ...saves,
+            ];
+            for (const result of await Promise.allSettled(calls)) {
+              if (result.status === 'rejected') errors.push(String((result.reason as Error).message));
+            }
+          }
+          expect(errors).toEqual([]);
+        },
+        120_000,
+      );
+
       it('stores the TOTP secret encrypted and recovery codes hashed, and runs the second factor on the table', async () => {
         const user = await accounts.add();
         const { cookie } = await signIn(user.email);
