@@ -5,6 +5,7 @@ import { AuthenticationEvents } from '../events/authentication-events.service.js
 import { TokenService } from '../jwt/token.service.js';
 import { MfaService } from '../mfa/mfa.service.js';
 import type { IssuedSession } from '../interfaces/session.interface.js';
+import type { SessionRecord } from '../interfaces/session-store.interface.js';
 import type { SignInOptions } from '../interfaces/sign-in-options.interface.js';
 import { sha256 } from '../utils/crypto.util.js';
 import { SessionService } from './session.service.js';
@@ -129,16 +130,19 @@ export class SignInService {
   /**
    * Gives this browser's session a new id, keeping its user, expiry and
    * second factor, and updates the cookie. Call it on privilege changes: a
-   * new password, a new role. `null` when the browser has no session, or
-   * lost it meanwhile (revoked, or rotated by another request).
+   * new password, a new role. The new session keeps the metadata, or stores
+   * `metadata` in its place when given, as `SessionService.rotate()` does.
+   * `null` when the browser has no session, or lost it meanwhile (revoked,
+   * or rotated by another request).
    */
-  async rotateSession(): Promise<IssuedSession | null> {
+  async rotateSession({ metadata }: Pick<Partial<SessionRecord>, 'metadata'> = {}): Promise<IssuedSession | null> {
     const exchange = this.scope.exchange();
     const session = await this.sessions.validate(this.sessions.tokenFrom(exchange?.request));
     if (!session) {
       return null;
     }
-    const issued = await this.sessions.rotate(session);
+    // Only the metadata: the second factor changes through completeMfa() and confirmMfa() alone.
+    const issued = await this.sessions.rotate(session, metadata ? { metadata } : {});
     if (issued) {
       this.setCookie(exchange, issued.cookie);
     }
