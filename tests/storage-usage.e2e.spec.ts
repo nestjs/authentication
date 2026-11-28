@@ -21,6 +21,7 @@ import {
   InMemoryMagicLinkStore,
   InMemoryMfaStore,
   InMemoryOidcStateStore,
+  InMemoryPasskeyStore,
   InMemoryRefreshTokenStore,
   InMemorySessionStore,
   JwtBearerProvider,
@@ -62,7 +63,7 @@ class Sessions extends SessionCookieProvider<{ id: string }> {
 }
 
 const KEY = 's'.repeat(32);
-const CONTRACTS: AuthenticationStorageContract[] = ['sessions', 'refreshTokens', 'mfa', 'magicLinks', 'oidcStates', 'emailTokens'];
+const CONTRACTS: AuthenticationStorageContract[] = ['sessions', 'refreshTokens', 'mfa', 'magicLinks', 'oidcStates', 'passkeys', 'emailTokens'];
 
 /**
  * The database every instance of the app shares, as in-memory stores behind
@@ -75,6 +76,7 @@ class World {
   readonly mfa = this.track('mfa', new InMemoryMfaStore());
   readonly magicLinks = this.track('magicLinks', new InMemoryMagicLinkStore());
   readonly oidcStates = this.track('oidcStates', new InMemoryOidcStateStore());
+  readonly passkeys = this.track('passkeys', new InMemoryPasskeyStore());
   readonly emailTokens = this.track('emailTokens', new InMemoryEmailTokenStore());
 
   private track<T extends object>(contract: AuthenticationStorageContract, store: T): T {

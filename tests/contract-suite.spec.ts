@@ -10,6 +10,7 @@ import {
   InMemoryMagicLinkStore,
   InMemoryMfaStore,
   InMemoryOidcStateStore,
+  InMemoryPasskeyStore,
   InMemoryRefreshTokenStore,
   InMemorySessionStore,
   type AuthenticationStorageSources,
@@ -25,6 +26,7 @@ const inMemory = (): AuthenticationStorageSources => ({
   mfa: new InMemoryMfaStore(),
   magicLinks: new InMemoryMagicLinkStore(),
   oidcStates: new InMemoryOidcStateStore(),
+  passkeys: new InMemoryPasskeyStore(),
   emailTokens: new InMemoryEmailTokenStore(),
 });
 
@@ -218,6 +220,8 @@ describe('authenticationStoreContract()', () => {
     expect(new Set(plain.map((c) => c.contract))).toEqual(
       new Set(['sessions', 'refreshTokens', 'mfa', 'magicLinks', 'oidcStates', 'emailTokens']),
     );
+    // Passkeys are opt-in: a `create()` without them still passes the default run.
+    expect(authenticationStoreContract(inMemory, { contracts: ['passkeys'] }).length).toBeGreaterThan(0);
     expect(full.length).toBeGreaterThan(plain.length);
     expect(plain.map((c) => c.name).every((name) => full.some((c) => c.name === name))).toBe(true);
     expect(new Set(full.map((c) => c.name)).size).toBe(full.length);
